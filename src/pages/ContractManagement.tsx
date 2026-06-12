@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileText,
@@ -17,8 +17,24 @@ import {
   User,
   ArrowRight,
   Info,
+  CheckSquare,
+  Square,
+  ChevronLeft,
+  History,
+  FileBarChart,
+  AlertTriangle,
+  GripVertical,
 } from 'lucide-react';
-import { Contract, ContractStatus, BreachOrderStatus } from '@/types';
+import {
+  Contract,
+  ContractStatus,
+  BreachOrderStatus,
+  BreachOrder,
+  BreachResolution,
+  InspectionReportRecord,
+  QuantityChangeLog,
+  BreachProcessRecord,
+} from '@/types';
 import { formatCurrency, formatNumber } from '@/utils/formatters';
 import { useContractStore, ContractImportPreview, ReportImportPreview } from '@/store/useContractStore';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -32,6 +48,10 @@ const ContractManagement = () => {
     confirmImportContracts,
     parseReportFile,
     confirmImportReport,
+    getContractById,
+    getBreachOrdersByContractId,
+    startProcessBreachOrder,
+    resolveBreachOrder,
   } = useContractStore();
 
   const [activeTab, setActiveTab] = useState<'contracts' | 'breach'>('contracts');
@@ -40,7 +60,7 @@ const ContractManagement = () => {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadType, setUploadType] = useState<'contract' | 'report'>('contract');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [selectedContractId, setSelectedContractId] = useState<string>('');
+  const [selectedContractIdForReport, setSelectedContractIdForReport] = useState<string>('');
   const [parsing, setParsing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [parseSuccess, setParseSuccess] = useState(false);
@@ -48,6 +68,18 @@ const ContractManagement = () => {
   const [importMessage, setImportMessage] = useState<string>('');
   const [contractPreview, setContractPreview] = useState<ContractImportPreview | null>(null);
   const [reportPreview, setReportPreview] = useState<ReportImportPreview | null>(null);
+
+  const [selectedPreviewContractIds, setSelectedPreviewContractIds] = useState<Set<string>>(new Set());
+
+  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
+  const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+
+  const [startProcessModalOpen, setStartProcessModalOpen] = useState(false);
+  const [resolveModalOpen, setResolveModalOpen] = useState(false);
+  const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
+  const [processHandler, setProcessHandler] = useState('赵法务');
+  const [processOpinion, setProcessOpinion] = useState('');
+  const [processResolution, setProcessResolution] = useState<BreachResolution>('pay_compensation');
 
   const userProvinceIds = useMemo(() => {
     if (user?.role === 'group_admin' || user?.role === 'technical_director' || user?.role === 'legal') {
@@ -85,6 +117,22 @@ const ContractManagement = () => {
     }
     return breachOrders.filter((b) => userProvinceIds.includes(b.provinceId));
   }, [breachOrders, userProvinceIds]);
+
+  const selectedContractDetail = useMemo(() => {
+    if (!selectedContractId) return null;
+    return getContractById(selectedContractId);
+  }, [selectedContractId, contracts, getContractById]);
+
+  const contractBreachOrders = useMemo(() => {
+    if (!selectedContractId) return [];
+    return getBreachOrdersByContractId(selectedContractId);
+  }, [selectedContractId, breachOrders, getBreachOrdersByContractId]);
+
+  useEffect(() => {
+    if (contractPreview) {
+      setSelectedPreviewContractIds(new Set(contractPreview.contracts.map((c) => c.id)));
+    }
+  }, [contractPreview]);
 
   const getStatusLabel = (status: ContractStatus): string => {
     const labels = {
@@ -124,6 +172,17 @@ const ContractManagement = () => {
     return colors[status];
   };
 
+  const getBreachResolutionLabel = (resolution?: BreachResolution): string => {
+    if (!resolution) return '';
+    const labels = {
+      pay_compensation: '支付违约金',
+      make_up_delivery: '补回交付量',
+      terminate_contract: '终止合同',
+      other: '其他方式',
+    };
+    return labels[resolution];
+  };
+
   const handleFileUpload = async (file: File) => {
     setUploadedFile(file);
     setParsing(true);
@@ -138,7 +197,7 @@ const ContractManagement = () => {
       if (uploadType === 'contract') {
         result = await parseContractFile(file);
       } else {
-        result = await parseReportFile(file, selectedContractId);
+        result = await parseReportFile(file, selectedContractIdForReport);
       }
 
       setImportMessage(result.message);
@@ -179,21 +238,17 @@ const ContractManagement = () => {
   const handleConfirmImport = () => {
     let result;
     if (uploadType === 'contract' && contractPreview) {
-      result = confirmImportContracts(contractPreview);
+      result = confirmImportContracts({
+        preview: contractPreview,
+        selectedIds: Array.from(selectedPreviewContractIds),
+      });
     } else if (uploadType === 'report' && reportPreview) {
       result = confirmImportReport(reportPreview);
     }
     if (result) {
       alert(result.message);
     }
-    setShowUploadModal(false);
-    setUploadedFile(null);
-    setParseSuccess(false);
-    setParseFailed(false);
-    setImportMessage('');
-    setContractPreview(null);
-    setReportPreview(null);
-    setSelectedContractId('');
+    closeModal();
   };
 
   const closeModal = () => {
@@ -204,7 +259,70 @@ const ContractManagement = () => {
     setImportMessage('');
     setContractPreview(null);
     setReportPreview(null);
-    setSelectedContractId('');
+    setSelectedContractIdForReport('');
+    setSelectedPreviewContractIds(new Set());
+  };
+
+  const togglePreviewContract = (id: string) => {
+    setSelectedPreviewContractIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (!contractPreview) return;
+    if (selectedPreviewContractIds.size === contractPreview.contracts.length) {
+      setSelectedPreviewContractIds(new Set());
+    } else {
+      setSelectedPreviewContractIds(new Set(contractPreview.contracts.map((c) => c.id)));
+    }
+  };
+
+  const openContractDetail = (contractId: string) => {
+    setSelectedContractId(contractId);
+    setDetailDrawerOpen(true);
+  };
+
+  const closeDetailDrawer = () => {
+    setDetailDrawerOpen(false);
+    setTimeout(() => setSelectedContractId(null), 300);
+  };
+
+  const openStartProcessModal = (orderId: string) => {
+    setActiveOrderId(orderId);
+    setProcessHandler('赵法务');
+    setProcessOpinion('');
+    setStartProcessModalOpen(true);
+  };
+
+  const openResolveModal = (orderId: string) => {
+    setActiveOrderId(orderId);
+    setProcessHandler('赵法务');
+    setProcessOpinion('');
+    setProcessResolution('pay_compensation');
+    setResolveModalOpen(true);
+  };
+
+  const handleStartProcess = () => {
+    if (!activeOrderId || !processOpinion.trim()) return;
+    const result = startProcessBreachOrder(activeOrderId, processHandler, processOpinion);
+    alert(result.message);
+    setStartProcessModalOpen(false);
+    setActiveOrderId(null);
+  };
+
+  const handleResolve = () => {
+    if (!activeOrderId || !processOpinion.trim()) return;
+    const result = resolveBreachOrder(activeOrderId, processHandler, processOpinion, processResolution);
+    alert(result.message);
+    setResolveModalOpen(false);
+    setActiveOrderId(null);
   };
 
   const statuses: { value: ContractStatus | 'all'; label: string; icon: any }[] = [
@@ -445,6 +563,12 @@ const ContractManagement = () => {
                             <Download className="w-3.5 h-3.5" />
                             下载合同
                           </button>
+                          <button
+                            onClick={() => openContractDetail(contract.id)}
+                            className="btn-secondary text-xs"
+                          >
+                            详情
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -543,7 +667,12 @@ const ContractManagement = () => {
 
                     <div className="text-right">
                       {order.status !== 'resolved' && (
-                        <button className="btn-primary text-xs">处理工单</button>
+                        <button
+                          onClick={() => openContractDetail(order.contractId)}
+                          className="btn-primary text-xs"
+                        >
+                          处理工单
+                        </button>
                       )}
                     </div>
                   </div>
@@ -570,7 +699,7 @@ const ContractManagement = () => {
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ type: 'spring', damping: 25, stiffness: 250 }}
               className={`fixed inset-x-0 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 ${
-                parseSuccess && contractPreview ? 'w-[680px] max-h-[85vh] overflow-y-auto' : 'w-[560px]'
+                parseSuccess && contractPreview ? 'w-[720px] max-h-[85vh] overflow-y-auto' : 'w-[560px]'
               } bg-dark-900 rounded-2xl border border-white/10 shadow-2xl z-50 overflow-hidden`}
             >
               <div className="flex items-center justify-between p-5 border-b border-white/5">
@@ -592,8 +721,8 @@ const ContractManagement = () => {
                       选择对应合同 <span className="text-danger-400">*</span>
                     </label>
                     <select
-                      value={selectedContractId}
-                      onChange={(e) => setSelectedContractId(e.target.value)}
+                      value={selectedContractIdForReport}
+                      onChange={(e) => setSelectedContractIdForReport(e.target.value)}
                       className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-primary-500/50"
                     >
                       <option value="">请选择合同</option>
@@ -716,56 +845,85 @@ const ContractManagement = () => {
                       </div>
                     </div>
 
-                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    <div className="flex items-center justify-between">
                       <p className="text-xs text-text-muted">合同明细：</p>
+                      <button
+                        onClick={toggleSelectAll}
+                        className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
+                      >
+                        {selectedPreviewContractIds.size === contractPreview.contracts.length
+                          ? '取消全选'
+                          : '全选'}
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
                       {contractPreview.contracts.map((c, idx) => (
                         <div key={idx} className="p-3 rounded-lg bg-white/5 border border-white/10">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium text-white">{c.contractNo}</span>
-                            <span className={`px-2 py-0.5 text-xs rounded-md ${
-                              c.status === 'breached'
-                                ? 'bg-danger-500/20 text-danger-400'
-                                : 'bg-accent-500/20 text-accent-400'
-                            }`}>
-                              {c.status === 'breached' ? '违约' : '正常'}
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div>
-                              <span className="text-text-muted">甲方：</span>
-                              <span className="text-text-secondary">{c.partyA}</span>
-                            </div>
-                            <div>
-                              <span className="text-text-muted">乙方：</span>
-                              <span className="text-text-secondary">{c.partyB}</span>
-                            </div>
-                            <div>
-                              <span className="text-text-muted">省份：</span>
-                              <span className="text-text-secondary">{c.provinceName}</span>
-                            </div>
-                            <div>
-                              <span className="text-text-muted">单价：</span>
-                              <span className="text-accent-400 font-mono">{formatCurrency(c.unitPrice)}/吨</span>
-                            </div>
-                          </div>
-                          <div className="mt-2 pt-2 border-t border-white/5">
-                            <div className="flex items-center justify-between text-xs mb-1">
-                              <span className="text-text-muted">履约进度</span>
-                              <span className="text-white font-mono">
-                                {c.actualQuantity} / {c.agreedQuantity} 吨
-                              </span>
-                            </div>
-                            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                              <div
-                                className="h-full rounded-full bg-gradient-to-r from-primary-600 to-primary-400"
-                                style={{
-                                  width: `${Math.min(100, (c.actualQuantity / c.agreedQuantity) * 100)}%`,
-                                }}
-                              />
+                          <div className="flex items-start gap-3">
+                            <button
+                              onClick={() => togglePreviewContract(c.id)}
+                              className="mt-0.5 shrink-0"
+                            >
+                              {selectedPreviewContractIds.has(c.id) ? (
+                                <CheckSquare className="w-5 h-5 text-primary-400" />
+                              ) : (
+                                <Square className="w-5 h-5 text-text-muted" />
+                              )}
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm font-medium text-white truncate">{c.contractNo}</span>
+                                <span className={`px-2 py-0.5 text-xs rounded-md shrink-0 ml-2 ${
+                                  c.status === 'breached'
+                                    ? 'bg-danger-500/20 text-danger-400'
+                                    : 'bg-accent-500/20 text-accent-400'
+                                }`}>
+                                  {c.status === 'breached' ? '违约' : '正常'}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-text-muted">甲方：</span>
+                                  <span className="text-text-secondary">{c.partyA}</span>
+                                </div>
+                                <div>
+                                  <span className="text-text-muted">乙方：</span>
+                                  <span className="text-text-secondary">{c.partyB}</span>
+                                </div>
+                                <div>
+                                  <span className="text-text-muted">省份：</span>
+                                  <span className="text-text-secondary">{c.provinceName}</span>
+                                </div>
+                                <div>
+                                  <span className="text-text-muted">单价：</span>
+                                  <span className="text-accent-400 font-mono">{formatCurrency(c.unitPrice)}/吨</span>
+                                </div>
+                              </div>
+                              <div className="mt-2 pt-2 border-t border-white/5">
+                                <div className="flex items-center justify-between text-xs mb-1">
+                                  <span className="text-text-muted">履约进度</span>
+                                  <span className="text-white font-mono">
+                                    {c.actualQuantity} / {c.agreedQuantity} 吨
+                                  </span>
+                                </div>
+                                <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full bg-gradient-to-r from-primary-600 to-primary-400"
+                                    style={{
+                                      width: `${Math.min(100, (c.actualQuantity / c.agreedQuantity) * 100)}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
                       ))}
+                    </div>
+
+                    <div className="text-sm text-text-secondary text-center">
+                      已选中 <span className="text-primary-400 font-bold">{selectedPreviewContractIds.size}</span> / {contractPreview.contracts.length} 份合同
                     </div>
 
                     {contractPreview.breachCount > 0 && (
@@ -895,10 +1053,530 @@ const ContractManagement = () => {
                 </button>
                 <button
                   onClick={handleConfirmImport}
-                  disabled={!parseSuccess || (!contractPreview && !reportPreview)}
+                  disabled={!parseSuccess || (!contractPreview && !reportPreview) || (contractPreview && selectedPreviewContractIds.size === 0)}
                   className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   确认导入
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {detailDrawerOpen && selectedContractDetail && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={closeDetailDrawer}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+            />
+            <motion.div
+              initial={{ x: 720 }}
+              animate={{ x: 0 }}
+              exit={{ x: 720 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 250 }}
+              className="fixed right-0 top-0 bottom-0 w-[720px] bg-dark-900 border-l border-white/10 shadow-2xl z-50 overflow-hidden flex flex-col"
+            >
+              <div className="flex items-center justify-between p-5 border-b border-white/5 shrink-0">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={closeDetailDrawer}
+                    className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5 text-text-secondary" />
+                  </button>
+                  <h3 className="text-lg font-semibold text-white">合同详情</h3>
+                </div>
+                <button
+                  onClick={closeDetailDrawer}
+                  className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                >
+                  <X className="w-5 h-5 text-text-secondary" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-5">
+                <div className="glass-card p-5">
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <h2 className="text-2xl font-bold text-white mb-2">{selectedContractDetail.contractNo}</h2>
+                      <span className={`px-2.5 py-1 text-xs rounded-md ${getStatusColor(selectedContractDetail.status)}`}>
+                        {getStatusLabel(selectedContractDetail.status)}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-text-muted mb-1">导入来源</p>
+                      <p className="text-sm text-white">
+                        {selectedContractDetail.importSource === 'excel'
+                          ? `Excel 导入 (${selectedContractDetail.importFileName || '未知文件'})`
+                          : '手动创建'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <p className="text-xs text-text-muted mb-1">甲方</p>
+                      <p className="text-sm text-white">{selectedContractDetail.partyA}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-text-muted mb-1">乙方</p>
+                      <p className="text-sm text-white">{selectedContractDetail.partyB}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-text-muted mb-1">省份</p>
+                      <p className="text-sm text-white">{selectedContractDetail.provinceName}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-text-muted mb-1">合同期限</p>
+                      <p className="text-sm text-white">
+                        {selectedContractDetail.startDate} ~ {selectedContractDetail.endDate}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t border-white/5">
+                    <div className="grid grid-cols-3 gap-4 mb-3">
+                      <div>
+                        <p className="text-xs text-text-muted mb-1">约定量</p>
+                        <p className="text-lg font-bold text-white font-mono">
+                          {selectedContractDetail.agreedQuantity} 吨
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-text-muted mb-1">实际量</p>
+                        <p className="text-lg font-bold text-primary-400 font-mono">
+                          {selectedContractDetail.actualQuantity} 吨
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-text-muted mb-1">单价</p>
+                        <p className="text-lg font-bold text-accent-400 font-mono">
+                          {formatCurrency(selectedContractDetail.unitPrice)}/吨
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between text-xs mb-1.5">
+                        <span className="text-text-muted">完成率</span>
+                        <span className={`font-bold font-mono ${
+                          selectedContractDetail.actualQuantity / selectedContractDetail.agreedQuantity >= 0.9
+                            ? 'text-accent-400'
+                            : selectedContractDetail.actualQuantity / selectedContractDetail.agreedQuantity >= 0.6
+                            ? 'text-primary-400'
+                            : 'text-warning-400'
+                        }`}>
+                          {((selectedContractDetail.actualQuantity / selectedContractDetail.agreedQuantity) * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="h-3 rounded-full bg-white/5 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-700 ${
+                            selectedContractDetail.actualQuantity / selectedContractDetail.agreedQuantity >= 0.9
+                              ? 'bg-gradient-to-r from-accent-600 to-accent-400'
+                              : selectedContractDetail.actualQuantity / selectedContractDetail.agreedQuantity >= 0.6
+                              ? 'bg-gradient-to-r from-primary-600 to-primary-400'
+                              : 'bg-gradient-to-r from-warning-600 to-warning-400'
+                          }`}
+                          style={{
+                            width: `${Math.min(100, (selectedContractDetail.actualQuantity / selectedContractDetail.agreedQuantity) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {selectedContractDetail.batteryModels?.length > 0 && (
+                    <div className="pt-4 mt-4 border-t border-white/5">
+                      <p className="text-xs text-text-muted mb-2">电池型号</p>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedContractDetail.batteryModels.map((model) => (
+                          <span
+                            key={model}
+                            className="px-2.5 py-1 text-xs bg-white/5 text-text-secondary rounded"
+                          >
+                            {model}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="glass-card p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <History className="w-5 h-5 text-primary-400" />
+                    <h4 className="text-base font-semibold text-white">回收量变化轨迹</h4>
+                  </div>
+                  {selectedContractDetail.quantityChanges && selectedContractDetail.quantityChanges.length > 0 ? (
+                    <div className="space-y-0">
+                      {[...selectedContractDetail.quantityChanges].reverse().map((change: QuantityChangeLog, idx: number) => (
+                        <div key={change.id} className="relative pl-8 pb-5 last:pb-0">
+                          {idx !== (selectedContractDetail.quantityChanges?.length || 0) - 1 && (
+                            <div className="absolute left-[11px] top-6 bottom-0 w-px bg-white/10" />
+                          )}
+                          <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-primary-500/20 border border-primary-500/40 flex items-center justify-center">
+                            <GripVertical className="w-3 h-3 text-primary-400" />
+                          </div>
+                          <div className="flex items-start justify-between mb-1">
+                            <p className="text-sm text-white font-medium">{change.changeReason}</p>
+                            <p className="text-xs text-text-muted">{change.changeTime}</p>
+                          </div>
+                          <p className="text-xs text-text-muted mb-1">操作人：{change.operator}</p>
+                          <p className="text-xs font-mono">
+                            <span className="text-text-secondary">{change.previousQuantity} 吨</span>
+                            <ArrowRight className="w-3 h-3 inline mx-1.5 text-primary-400" />
+                            <span className="text-primary-400 font-bold">{change.newQuantity} 吨</span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <History className="w-10 h-10 mx-auto text-text-muted mb-2 opacity-50" />
+                      <p className="text-sm text-text-muted">暂无变化记录</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="glass-card p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <FileBarChart className="w-5 h-5 text-accent-400" />
+                    <h4 className="text-base font-semibold text-white">检测报告导入记录</h4>
+                  </div>
+                  {selectedContractDetail.inspectionReports && selectedContractDetail.inspectionReports.length > 0 ? (
+                    <div className="space-y-3">
+                      {[...selectedContractDetail.inspectionReports].reverse().map((report: InspectionReportRecord) => (
+                        <div key={report.id} className="p-3 rounded-lg bg-white/5 border border-white/10">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-sm font-medium text-white">
+                              {report.reportNo}
+                              {report.fileName && (
+                                <span className="text-xs text-text-muted ml-2">({report.fileName})</span>
+                              )}
+                            </p>
+                            <p className="text-xs text-text-muted">{report.importTime}</p>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3 text-xs">
+                            <div>
+                              <p className="text-text-muted mb-1">本次回收量</p>
+                              <p className="text-white font-mono font-bold">{report.recycledQuantity} 吨</p>
+                            </div>
+                            <div>
+                              <p className="text-text-muted mb-1">之前量</p>
+                              <p className="text-text-secondary font-mono">{report.previousQuantity} 吨</p>
+                            </div>
+                            <div>
+                              <p className="text-text-muted mb-1">之后量</p>
+                              <p className="text-accent-400 font-mono font-bold">{report.newQuantity} 吨</p>
+                            </div>
+                          </div>
+                          <p className="text-xs text-text-muted mt-2">操作人：{report.operator}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <FileBarChart className="w-10 h-10 mx-auto text-text-muted mb-2 opacity-50" />
+                      <p className="text-sm text-text-muted">暂无检测报告记录</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="glass-card p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <AlertTriangle className="w-5 h-5 text-danger-400" />
+                    <h4 className="text-base font-semibold text-white">违约工单</h4>
+                    <span className="text-xs text-text-muted">({contractBreachOrders.length})</span>
+                  </div>
+                  {contractBreachOrders.length > 0 ? (
+                    <div className="space-y-3">
+                      {contractBreachOrders.map((order: BreachOrder, orderIdx: number) => (
+                        <div key={order.id} className="p-4 rounded-lg bg-white/5 border border-white/10">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-white">
+                                工单 #{String(orderIdx + 1).padStart(3, '0')}
+                              </span>
+                              <span className={`px-2 py-0.5 text-xs rounded-md ${getBreachStatusColor(order.status)}`}>
+                                {getBreachStatusLabel(order.status)}
+                              </span>
+                            </div>
+                            <p className="text-xs text-text-muted">{order.createTime}</p>
+                          </div>
+                          <p className="text-sm text-text-secondary mb-3">{order.reason}</p>
+                          <div className="grid grid-cols-3 gap-3 text-xs mb-3">
+                            <div>
+                              <p className="text-text-muted mb-1">缺口</p>
+                              <p className="text-danger-400 font-mono font-bold">{order.shortfall} 吨</p>
+                            </div>
+                            <div>
+                              <p className="text-text-muted mb-1">预估损失</p>
+                              <p className="text-warning-400 font-mono font-bold">{formatCurrency(order.estimatedLoss)}</p>
+                            </div>
+                            <div>
+                              <p className="text-text-muted mb-1">处理人</p>
+                              <p className="text-white flex items-center gap-1">
+                                {order.handler ? (
+                                  <>
+                                    <User className="w-3 h-3 text-primary-400" />
+                                    {order.handler}
+                                  </>
+                                ) : (
+                                  <span className="text-text-muted">待分配</span>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+
+                          {order.status === 'resolved' && (
+                            <div className="mb-3 p-3 rounded-lg bg-accent-500/10 border border-accent-500/30">
+                              <p className="text-xs text-text-muted mb-1">
+                                处理结果 · {order.resolveTime}
+                              </p>
+                              {order.finalResolution && (
+                                <p className="text-sm text-accent-400 font-medium mb-1">
+                                  处理方式：{getBreachResolutionLabel(order.finalResolution)}
+                                </p>
+                              )}
+                              {order.finalOpinion && (
+                                <p className="text-xs text-text-secondary">{order.finalOpinion}</p>
+                              )}
+                            </div>
+                          )}
+
+                          {order.processRecords && order.processRecords.length > 0 && (
+                            <div className="mb-3 pt-3 border-t border-white/5">
+                              <p className="text-xs text-text-muted mb-2">处理记录</p>
+                              <div className="space-y-0">
+                                {order.processRecords.map((record: BreachProcessRecord, recordIdx: number) => (
+                                  <div key={record.id} className="relative pl-6 pb-3 last:pb-0">
+                                    {recordIdx !== (order.processRecords?.length || 0) - 1 && (
+                                      <div className="absolute left-[7px] top-4 bottom-0 w-px bg-white/10" />
+                                    )}
+                                    <div className={`absolute left-0 top-1 w-4 h-4 rounded-full flex items-center justify-center ${
+                                      record.status === 'resolved'
+                                        ? 'bg-accent-500/20 border border-accent-500/40'
+                                        : 'bg-primary-500/20 border border-primary-500/40'
+                                    }`}>
+                                      <div className={`w-1.5 h-1.5 rounded-full ${
+                                        record.status === 'resolved' ? 'bg-accent-400' : 'bg-primary-400'
+                                      }`} />
+                                    </div>
+                                    <div className="flex items-center gap-2 mb-0.5">
+                                      <span className={`text-xs font-medium ${
+                                        record.status === 'resolved' ? 'text-accent-400' : 'text-primary-400'
+                                      }`}>
+                                        {getBreachStatusLabel(record.status)}
+                                      </span>
+                                      <span className="text-xs text-text-muted">{record.processTime}</span>
+                                    </div>
+                                    <p className="text-xs text-white">
+                                      <User className="w-3 h-3 inline mr-1 text-text-muted" />
+                                      {record.handler}
+                                      {record.resolution && (
+                                        <span className="ml-2 text-text-secondary">
+                                          · {getBreachResolutionLabel(record.resolution)}
+                                        </span>
+                                      )}
+                                    </p>
+                                    {record.opinion && (
+                                      <p className="text-xs text-text-secondary mt-0.5">{record.opinion}</p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {order.status === 'pending' && (
+                            <div className="pt-3 border-t border-white/5">
+                              <button
+                                onClick={() => openStartProcessModal(order.id)}
+                                className="btn-primary text-xs w-full"
+                              >
+                                开始处理
+                              </button>
+                            </div>
+                          )}
+                          {order.status === 'processing' && (
+                            <div className="pt-3 border-t border-white/5">
+                              <button
+                                onClick={() => openResolveModal(order.id)}
+                                className="btn-primary text-xs w-full"
+                              >
+                                解决工单
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8">
+                      <CheckCircle className="w-10 h-10 mx-auto text-accent-400 mb-2 opacity-50" />
+                      <p className="text-sm text-text-muted">暂无违约工单</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {startProcessModalOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setStartProcessModalOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 250 }}
+              className="fixed inset-x-0 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] bg-dark-900 rounded-2xl border border-white/10 shadow-2xl z-[60] overflow-hidden"
+            >
+              <div className="flex items-center justify-between p-5 border-b border-white/5">
+                <h3 className="text-lg font-semibold text-white">开始处理违约工单</h3>
+                <button
+                  onClick={() => setStartProcessModalOpen(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                >
+                  <X className="w-5 h-5 text-text-secondary" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="text-sm text-text-muted block mb-1.5">处理人</label>
+                  <input
+                    type="text"
+                    value={processHandler}
+                    onChange={(e) => setProcessHandler(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-primary-500/50"
+                    placeholder="请输入处理人姓名"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-text-muted block mb-1.5">
+                    处理意见 <span className="text-danger-400">*</span>
+                  </label>
+                  <textarea
+                    value={processOpinion}
+                    onChange={(e) => setProcessOpinion(e.target.value)}
+                    rows={4}
+                    className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-text-muted focus:outline-none focus:border-primary-500/50 resize-none"
+                    placeholder="请输入处理意见..."
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 p-5 border-t border-white/5">
+                <button
+                  onClick={() => setStartProcessModalOpen(false)}
+                  className="btn-secondary text-sm"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleStartProcess}
+                  disabled={!processOpinion.trim()}
+                  className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  确定
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {resolveModalOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setResolveModalOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 250 }}
+              className="fixed inset-x-0 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] bg-dark-900 rounded-2xl border border-white/10 shadow-2xl z-[60] overflow-hidden"
+            >
+              <div className="flex items-center justify-between p-5 border-b border-white/5">
+                <h3 className="text-lg font-semibold text-white">解决违约工单</h3>
+                <button
+                  onClick={() => setResolveModalOpen(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                >
+                  <X className="w-5 h-5 text-text-secondary" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="text-sm text-text-muted block mb-1.5">处理人</label>
+                  <input
+                    type="text"
+                    value={processHandler}
+                    onChange={(e) => setProcessHandler(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-primary-500/50"
+                    placeholder="请输入处理人姓名"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-text-muted block mb-1.5">
+                    处理方式 <span className="text-danger-400">*</span>
+                  </label>
+                  <select
+                    value={processResolution}
+                    onChange={(e) => setProcessResolution(e.target.value as BreachResolution)}
+                    className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-primary-500/50"
+                  >
+                    <option value="pay_compensation">支付违约金</option>
+                    <option value="make_up_delivery">补回交付量</option>
+                    <option value="terminate_contract">终止合同</option>
+                    <option value="other">其他方式</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm text-text-muted block mb-1.5">
+                    处理意见 <span className="text-danger-400">*</span>
+                  </label>
+                  <textarea
+                    value={processOpinion}
+                    onChange={(e) => setProcessOpinion(e.target.value)}
+                    rows={4}
+                    className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-text-muted focus:outline-none focus:border-primary-500/50 resize-none"
+                    placeholder="请输入处理意见..."
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 p-5 border-t border-white/5">
+                <button
+                  onClick={() => setResolveModalOpen(false)}
+                  className="btn-secondary text-sm"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleResolve}
+                  disabled={!processOpinion.trim()}
+                  className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  确定
                 </button>
               </div>
             </motion.div>

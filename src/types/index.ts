@@ -90,6 +90,30 @@ export interface ApprovalRecord {
 
 export type ContractStatus = 'active' | 'fulfilled' | 'breached' | 'expired';
 
+export type ImportSource = 'excel' | 'manual' | 'system';
+
+export interface InspectionReportRecord {
+  id: string;
+  contractId: string;
+  reportNo: string;
+  fileName?: string;
+  recycledQuantity: number;
+  previousQuantity: number;
+  newQuantity: number;
+  operator: string;
+  importTime: string;
+}
+
+export interface QuantityChangeLog {
+  id: string;
+  contractId: string;
+  previousQuantity: number;
+  newQuantity: number;
+  changeReason: string;
+  operator: string;
+  changeTime: string;
+}
+
 export interface Contract {
   id: string;
   contractNo: string;
@@ -105,9 +129,24 @@ export interface Contract {
   provinceId: string;
   provinceName: string;
   createTime: string;
+  importSource?: ImportSource;
+  importFileName?: string;
+  inspectionReports?: InspectionReportRecord[];
+  quantityChanges?: QuantityChangeLog[];
 }
 
 export type BreachOrderStatus = 'pending' | 'processing' | 'resolved';
+export type BreachResolution = 'pay_compensation' | 'make_up_delivery' | 'terminate_contract' | 'other';
+
+export interface BreachProcessRecord {
+  id: string;
+  orderId: string;
+  status: BreachOrderStatus;
+  handler: string;
+  opinion: string;
+  resolution?: BreachResolution;
+  processTime: string;
+}
 
 export interface BreachOrder {
   id: string;
@@ -120,6 +159,10 @@ export interface BreachOrder {
   status: BreachOrderStatus;
   handler?: string;
   provinceId: string;
+  processRecords?: BreachProcessRecord[];
+  finalOpinion?: string;
+  finalResolution?: BreachResolution;
+  resolveTime?: string;
 }
 
 export interface HealthReport {

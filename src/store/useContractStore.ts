@@ -1,5 +1,15 @@
 import { create } from 'zustand';
-import { Contract, BreachOrder, ContractStatus } from '@/types';
+import {
+  Contract,
+  BreachOrder,
+  BreachProcessRecord,
+  BreachResolution,
+  InspectionReportRecord,
+  QuantityChangeLog,
+  ImportSource,
+  ContractStatus,
+  BreachOrderStatus,
+} from '@/types';
 import { contracts as initialContracts, breachOrders as initialBreachOrders } from '@/data/contracts';
 import { provinces } from '@/data/provinces';
 import dayjs from 'dayjs';
@@ -23,6 +33,7 @@ const getProvinceIdByName = (name: string): string => {
 export interface ContractImportPreview {
   contracts: Contract[];
   breachCount: number;
+  fileName?: string;
 }
 
 export interface ReportImportPreview {
@@ -34,22 +45,26 @@ export interface ReportImportPreview {
   wasBreached: boolean;
   willBeBreached: boolean;
   breachChange: 'none' | 'generated' | 'resolved';
+  fileName?: string;
 }
 
 interface ContractState {
   contracts: Contract[];
   breachOrders: BreachOrder[];
   parseContractFile: (file: File) => Promise<{ success: boolean; message: string; preview?: ContractImportPreview }>;
-  confirmImportContracts: (preview: ContractImportPreview) => { success: boolean; message: string };
+  confirmImportContracts: (params: { preview: ContractImportPreview; selectedIds?: string[] }) => { success: boolean; message: string };
   parseReportFile: (file: File, selectedContractId?: string) => Promise<{ success: boolean; message: string; preview?: ReportImportPreview }>;
   confirmImportReport: (preview: ReportImportPreview) => { success: boolean; message: string };
   addContract: (contract: Omit<Contract, 'id' | 'createTime' | 'status'>) => void;
   updateContractActualQuantity: (contractId: string, quantity: number) => void;
   checkBreach: (contractId: string) => void;
   assignBreachOrder: (orderId: string, handler: string) => void;
-  resolveBreachOrder: (orderId: string) => void;
+  startProcessBreachOrder: (orderId: string, handler: string, opinion: string) => { success: boolean; message: string };
+  resolveBreachOrder: (orderId: string, handler: string, opinion: string, resolution?: BreachResolution) => { success: boolean; message: string };
   getContractsByProvince: (provinceId?: string) => Contract[];
   getBreachOrdersByProvince: (provinceId?: string) => BreachOrder[];
+  getContractById: (id: string) => Contract | undefined;
+  getBreachOrdersByContractId: (contractId: string) => BreachOrder[];
 }
 
 let contractIdCounter = 100;
@@ -131,6 +146,10 @@ export const useContractStore = create<ContractState>((set, get) => ({
           provinceId,
           provinceName,
           createTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+          importSource: 'excel' as ImportSource,
+          importFileName: file.name,
+          inspectionReports: [],
+          quantityChanges: [],
         };
       });
 
@@ -142,6 +161,7 @@ export const useContractStore = create<ContractState>((set, get) => ({
         preview: {
           contracts: previewContracts,
           breachCount,
+          fileName: file.name,
         },
       };
     } catch (err) {
@@ -149,20 +169,34 @@ export const useContractStore = create<ContractState>((set, get) => ({
     }
   },
 
-  confirmImportContracts: (preview) => {
-    const contractsToImport = preview.contracts.map((c) => {
+  confirmImportContracts: ({ preview, selectedIds }) => {
+    let contractsToImport = preview.contracts;
+
+    if (selectedIds && selectedIds.length > 0) {
+      contractsToImport = preview.contracts.filter((c) => selectedIds.includes(c.id));
+    }
+
+    if (contractsToImport.length === 0) {
+      return { success: false, message: '未选择需要导入的合同' };
+    }
+
+    const finalContracts = contractsToImport.map((c) => {
       contractIdCounter++;
       return {
         ...c,
         id: `contract-import-${contractIdCounter}`,
+        importSource: 'excel' as ImportSource,
+        importFileName: preview.fileName,
+        inspectionReports: c.inspectionReports || [],
+        quantityChanges: c.quantityChanges || [],
       };
     });
 
     set((state) => {
-      const allContracts = [...contractsToImport, ...state.contracts];
+      const allContracts = [...finalContracts, ...state.contracts];
 
       const newBreachOrders: BreachOrder[] = [];
-      contractsToImport.forEach((contract) => {
+      finalContracts.forEach((contract) => {
         if (contract.actualQuantity < contract.agreedQuantity * 0.9) {
           breachIdCounter++;
           const shortfall = contract.agreedQuantity - contract.actualQuantity;
@@ -177,6 +211,7 @@ export const useContractStore = create<ContractState>((set, get) => ({
             status: 'processing',
             handler: '赵法务',
             provinceId: contract.provinceId,
+            processRecords: [],
           });
         }
       });
@@ -187,10 +222,10 @@ export const useContractStore = create<ContractState>((set, get) => ({
       };
     });
 
-    const breachCount = contractsToImport.filter((c) => c.status === 'breached').length;
+    const breachCount = finalContracts.filter((c) => c.status === 'breached').length;
     return {
       success: true,
-      message: `成功导入 ${contractsToImport.length} 份合同${breachCount > 0 ? `，已自动生成 ${breachCount} 份违约工单并派发给法务` : ''}`,
+      message: `成功导入 ${finalContracts.length} 份合同${breachCount > 0 ? `，已自动生成 ${breachCount} 份违约工单并派发给法务` : ''}`,
     };
   },
 
@@ -203,16 +238,22 @@ export const useContractStore = create<ContractState>((set, get) => ({
       }
 
       const firstRow = jsonData[0];
-      const quantityKey = findKey(firstRow, ['回收量', '数量', 'quantity', 'total', '重量', '总重量']);
+      const quantityKeywords = ['回收量', '数量', 'quantity', 'total', '重量', '总重量', '实际回收量', '回收吨数', '吨数'];
+      const quantityKey = findKey(firstRow, quantityKeywords);
       const contractNoKey = findKey(firstRow, ['合同号', '合同编号', 'contractNo', 'contract_no']);
 
-      let totalRecycled = jsonData.reduce((sum, row) => {
-        return sum + (Number(row[quantityKey || '']) || 0);
-      }, 0);
-
-      if (totalRecycled === 0) {
-        totalRecycled = Math.floor(jsonData.length * (20 + Math.random() * 30));
+      if (!quantityKey) {
+        return { success: false, message: '报告缺少回收量数据，请确保文件包含"回收量"、"数量"或类似列' };
       }
+
+      let totalRecycled = 0;
+      jsonData.forEach((row) => {
+        const val = row[quantityKey];
+        const num = Number(val);
+        if (!isNaN(num) && num !== undefined) {
+          totalRecycled += num;
+        }
+      });
 
       const contracts = get().contracts;
       let targetContract: Contract | undefined;
@@ -256,6 +297,7 @@ export const useContractStore = create<ContractState>((set, get) => ({
           wasBreached,
           willBeBreached,
           breachChange,
+          fileName: file.name,
         },
       };
     } catch (err) {
@@ -264,7 +306,34 @@ export const useContractStore = create<ContractState>((set, get) => ({
   },
 
   confirmImportReport: (preview) => {
-    const { contractId, newActualQuantity } = preview;
+    const { contractId, newActualQuantity, oldActualQuantity, fileName } = preview;
+
+    const reportId = `inspection-report-${Date.now()}`;
+    const reportNo = `RPT-${Date.now().toString().slice(-6)}`;
+    const qtyChangeId = `qty-change-${Date.now()}`;
+    const nowStr = dayjs().format('YYYY-MM-DD HH:mm:ss');
+
+    const newReport: InspectionReportRecord = {
+      id: reportId,
+      contractId,
+      reportNo,
+      fileName,
+      recycledQuantity: newActualQuantity,
+      previousQuantity: oldActualQuantity,
+      newQuantity: newActualQuantity,
+      operator: '系统',
+      importTime: nowStr,
+    };
+
+    const newQtyChange: QuantityChangeLog = {
+      id: qtyChangeId,
+      contractId,
+      previousQuantity: oldActualQuantity,
+      newQuantity: newActualQuantity,
+      changeReason: '检测报告导入更新',
+      operator: '系统',
+      changeTime: nowStr,
+    };
 
     set((state) => ({
       contracts: state.contracts.map((c) =>
@@ -277,6 +346,8 @@ export const useContractStore = create<ContractState>((set, get) => ({
                 : newActualQuantity < c.agreedQuantity * 0.9
                 ? 'breached' as ContractStatus
                 : 'active' as ContractStatus,
+              inspectionReports: [...(c.inspectionReports || []), newReport],
+              quantityChanges: [...(c.quantityChanges || []), newQtyChange],
             }
           : c
       ),
@@ -284,7 +355,6 @@ export const useContractStore = create<ContractState>((set, get) => ({
 
     get().checkBreach(contractId);
 
-    const updated = get().contracts.find((c) => c.id === contractId);
     let statusMsg = '';
     if (preview.breachChange === 'generated') {
       statusMsg = '，已触发违约并生成法务工单';
@@ -306,6 +376,8 @@ export const useContractStore = create<ContractState>((set, get) => ({
       id: `contract-${contractIdCounter}`,
       createTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
       status,
+      inspectionReports: [],
+      quantityChanges: [],
     };
 
     set((state) => ({
@@ -352,6 +424,7 @@ export const useContractStore = create<ContractState>((set, get) => ({
         status: 'processing',
         handler: '赵法务',
         provinceId: contract.provinceId,
+        processRecords: [],
       };
 
       set((state) => ({
@@ -363,7 +436,7 @@ export const useContractStore = create<ContractState>((set, get) => ({
     } else if (!isBreached && existingBreach) {
       set((state) => ({
         breachOrders: state.breachOrders.map((b) =>
-          b.id === existingBreach.id ? { ...b, status: 'resolved' as const } : b
+          b.id === existingBreach.id ? { ...b, status: 'resolved' as BreachOrderStatus } : b
         ),
       }));
     }
@@ -373,18 +446,75 @@ export const useContractStore = create<ContractState>((set, get) => ({
     set((state) => ({
       breachOrders: state.breachOrders.map((o) =>
         o.id === orderId
-          ? { ...o, status: 'processing' as const, handler }
+          ? { ...o, status: 'processing' as BreachOrderStatus, handler }
           : o
       ),
     }));
   },
 
-  resolveBreachOrder: (orderId) => {
+  startProcessBreachOrder: (orderId, handler, opinion) => {
+    const nowStr = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    const processRecord: BreachProcessRecord = {
+      id: `breach-process-${Date.now()}`,
+      orderId,
+      status: 'processing',
+      handler,
+      opinion,
+      processTime: nowStr,
+    };
+
     set((state) => ({
       breachOrders: state.breachOrders.map((o) =>
-        o.id === orderId ? { ...o, status: 'resolved' as const } : o
+        o.id === orderId
+          ? {
+              ...o,
+              status: 'processing' as BreachOrderStatus,
+              handler,
+              processRecords: [...(o.processRecords || []), processRecord],
+            }
+          : o
       ),
     }));
+
+    return {
+      success: true,
+      message: `违约工单已进入处理流程，处理人：${handler}`,
+    };
+  },
+
+  resolveBreachOrder: (orderId, handler, opinion, resolution) => {
+    const nowStr = dayjs().format('YYYY-MM-DD HH:mm:ss');
+    const processRecord: BreachProcessRecord = {
+      id: `breach-process-${Date.now()}`,
+      orderId,
+      status: 'resolved',
+      handler,
+      opinion,
+      resolution,
+      processTime: nowStr,
+    };
+
+    set((state) => ({
+      breachOrders: state.breachOrders.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              status: 'resolved' as BreachOrderStatus,
+              handler,
+              finalOpinion: opinion,
+              finalResolution: resolution,
+              resolveTime: nowStr,
+              processRecords: [...(o.processRecords || []), processRecord],
+            }
+          : o
+      ),
+    }));
+
+    const resolutionText = resolution ? `，处理方式：${resolution}` : '';
+    return {
+      success: true,
+      message: `违约工单已完成处理${resolutionText}`,
+    };
   },
 
   getContractsByProvince: (provinceId) => {
@@ -395,5 +525,13 @@ export const useContractStore = create<ContractState>((set, get) => ({
   getBreachOrdersByProvince: (provinceId) => {
     if (!provinceId) return get().breachOrders;
     return get().breachOrders.filter((b) => b.provinceId === provinceId);
+  },
+
+  getContractById: (id) => {
+    return get().contracts.find((c) => c.id === id);
+  },
+
+  getBreachOrdersByContractId: (contractId) => {
+    return get().breachOrders.filter((b) => b.contractId === contractId);
   },
 }));
