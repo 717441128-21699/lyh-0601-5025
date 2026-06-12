@@ -129,7 +129,7 @@ export const HeatMap: React.FC<HeatMapProps> = ({ provinces, title = '全国电�
         <div className="mt-4 pt-4 border-t border-white/5">
           <p className="text-xs text-text-muted mb-2">其他省份</p>
           <div className="flex flex-wrap gap-2">
-            {otherProvinces.slice(0, 12).map((province) => (
+            {otherProvinces.map((province) => (
               <button
                 key={province.id}
                 onClick={() => handleProvinceClick(province.id)}

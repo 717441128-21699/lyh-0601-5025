@@ -34,9 +34,6 @@ const HealthReportPage = () => {
     }
     const provinceIds = user?.provinceIds || [];
     return healthReports.filter((report) => {
-      if (report.scopeType === 'national') {
-        return true;
-      }
       if (report.scopeType === 'province') {
         return provinceIds.includes(report.scopeId);
       }

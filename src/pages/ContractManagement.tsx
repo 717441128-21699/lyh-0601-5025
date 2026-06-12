@@ -39,6 +39,7 @@ const ContractManagement = () => {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadType, setUploadType] = useState<'contract' | 'report'>('contract');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [selectedContractId, setSelectedContractId] = useState<string>('');
   const [parsing, setParsing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [parseResult, setParseResult] = useState<any>(null);
@@ -130,7 +131,7 @@ const ContractManagement = () => {
       if (uploadType === 'contract') {
         result = await importContract(file);
       } else {
-        result = await importReport(file, '');
+        result = await importReport(file, selectedContractId);
       }
 
       setParseResult({
@@ -173,6 +174,7 @@ const ContractManagement = () => {
     setUploadedFile(null);
     setParseResult(null);
     setImportMessage('');
+    setSelectedContractId('');
   };
 
   const statuses: { value: ContractStatus | 'all'; label: string; icon: any }[] = [
@@ -552,6 +554,24 @@ const ContractManagement = () => {
               </div>
 
               <div className="p-5 space-y-4">
+                {uploadType === 'report' && (
+                  <div>
+                    <label className="text-sm text-text-muted block mb-1.5">选择对应合同</label>
+                    <select
+                      value={selectedContractId}
+                      onChange={(e) => setSelectedContractId(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-primary-500/50"
+                    >
+                      <option value="">请选择合同（可选，系统也会自动识别）</option>
+                      {visibleContracts.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.contractNo} - {c.partyA} ({c.provinceName})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}

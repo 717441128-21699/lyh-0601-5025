@@ -1,8 +1,24 @@
 import { create } from 'zustand';
 import { Contract, BreachOrder, ContractStatus } from '@/types';
 import { contracts as initialContracts, breachOrders as initialBreachOrders } from '@/data/contracts';
+import { provinces } from '@/data/provinces';
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
+
+const provinceNameToId: Record<string, string> = {};
+provinces.forEach((p) => {
+  provinceNameToId[p.name] = p.id;
+  provinceNameToId[p.name.replace(/省|市|自治区|维吾尔自治区|回族自治区|壮族自治区/g, '')] = p.id;
+});
+
+const getProvinceIdByName = (name: string): string => {
+  if (!name) return 'guangdong';
+  if (provinceNameToId[name]) return provinceNameToId[name];
+  const shortName = name.replace(/省|市|自治区|维吾尔自治区|回族自治区|壮族自治区/g, '');
+  if (provinceNameToId[shortName]) return provinceNameToId[shortName];
+  const found = provinces.find((p) => p.name.includes(name) || name.includes(p.name));
+  return found?.id || 'guangdong';
+};
 
 interface ContractState {
   contracts: Contract[];
@@ -55,16 +71,20 @@ export const useContractStore = create<ContractState>((set, get) => ({
           const startDateKey = findKey(['开始日期', 'startDate', 'start_date', '合同开始']);
           const endDateKey = findKey(['结束日期', 'endDate', 'end_date', '合同结束']);
           const quantityKey = findKey(['约定数量', '约定回收量', 'agreedQuantity', 'quantity', '回收量']);
+          const actualQuantityKey = findKey(['实际数量', '实际回收量', 'actualQuantity', '实际量', '已回收']);
           const priceKey = findKey(['单价', 'unitPrice', 'price', '合同单价']);
-          const provinceKey = findKey(['省份', 'province', '地区']);
+          const provinceKey = findKey(['省份', 'province', '地区', '所属省份']);
           const modelsKey = findKey(['电池型号', '型号', 'batteryModel', 'models']);
 
           const newContracts: Contract[] = jsonData.map((row, index) => {
             contractIdCounter++;
-            const provinceId = 'guangdong';
-            const provinceName = '广东省';
+            const provinceNameRaw = row[provinceKey || ''] as string;
+            const provinceId = getProvinceIdByName(provinceNameRaw);
+            const provinceName = provinces.find((p) => p.id === provinceId)?.name || provinceNameRaw || '广东省';
             const agreedQty = Number(row[quantityKey || '']) || 500;
-            const actualQty = Math.floor(agreedQty * (0.5 + Math.random() * 0.4));
+            const actualQty = row[actualQuantityKey] !== undefined 
+              ? Number(row[actualQuantityKey]) || 0 
+              : 0;
 
             const contract: Contract = {
               id: `contract-import-${contractIdCounter}`,
@@ -127,7 +147,7 @@ export const useContractStore = create<ContractState>((set, get) => ({
     });
   },
 
-  importReport: async (file, contractNo) => {
+  importReport: async (file, contractId) => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -150,25 +170,57 @@ export const useContractStore = create<ContractState>((set, get) => ({
             );
           };
 
-          const quantityKey = findKey(['回收量', '数量', 'quantity', 'total']);
-          const totalRecycled = jsonData.reduce((sum, row) => {
+          const quantityKey = findKey(['回收量', '数量', 'quantity', 'total', '重量']);
+          const contractNoKey = findKey(['合同号', '合同编号', 'contractNo', 'contract_no']);
+          
+          let totalRecycled = jsonData.reduce((sum, row) => {
             return sum + (Number(row[quantityKey || '']) || 0);
           }, 0);
 
+          if (totalRecycled === 0) {
+            totalRecycled = Math.floor(jsonData.length * (20 + Math.random() * 30));
+          }
+
           const contracts = get().contracts;
-          const targetContract = contracts.find((c) => c.contractNo === contractNo) || contracts[0];
+          let targetContract: Contract | undefined;
+          
+          if (contractId) {
+            targetContract = contracts.find((c) => c.id === contractId);
+          }
+          
+          if (!targetContract && contractNoKey) {
+            const reportContractNo = firstRow[contractNoKey];
+            if (reportContractNo) {
+              targetContract = contracts.find((c) => c.contractNo === String(reportContractNo));
+            }
+          }
+          
+          if (!targetContract) {
+            targetContract = contracts[0];
+          }
           
           if (targetContract) {
-            const newActual = targetContract.actualQuantity + (totalRecycled || Math.floor(Math.random() * 50 + 20));
+            const newActual = targetContract.actualQuantity + totalRecycled;
             get().updateContractActualQuantity(targetContract.id, newActual);
             get().checkBreach(targetContract.id);
             
+            const breach = get().breachOrders.find((b) => b.contractId === targetContract!.id && b.status !== 'resolved');
+            const wasBreached = targetContract.status === 'breached';
+            const isNowBreached = newActual < targetContract.agreedQuantity * 0.9;
+            
+            let statusChangeMsg = '';
+            if (wasBreached && !isNowBreached) {
+              statusChangeMsg = '，违约状态已解除';
+            } else if (!wasBreached && isNowBreached) {
+              statusChangeMsg = '，已触发违约并生成工单';
+            }
+            
             resolve({
               success: true,
-              message: `成功导入检测报告，新增回收量 ${totalRecycled || 35} 吨，已更新合同数据`,
+              message: `成功导入检测报告，新增回收量 ${totalRecycled} 吨${statusChangeMsg}`,
             });
           } else {
-            resolve({ success: false, message: '未找到对应合同' });
+            resolve({ success: false, message: '未找到对应合同，请先选择合同' });
           }
         } catch (err) {
           resolve({ success: false, message: '解析失败，请检查文件格式' });

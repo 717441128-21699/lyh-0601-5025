@@ -19,10 +19,10 @@ const approvalSteps = [
 export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) => {
   const [opinion, setOpinion] = useState('');
   const [selectedResult, setSelectedResult] = useState<'pass' | 'reject' | 'adjust' | null>(null);
-  const { approveWarning, getWarningById } = useWarningStore();
+  const { approveWarning, warnings } = useWarningStore();
   const { user } = useAuthStore();
 
-  const currentWarning = getWarningById(warning.id) || warning;
+  const currentWarning = warnings.find((w) => w.id === warning.id) || warning;
   const currentLevel = currentWarning.currentApprovalLevel;
   const nextLevel = currentLevel + 1;
   const isCompleted = currentLevel >= 3 || currentWarning.status === 'resolved' || currentWarning.status === 'rejected';

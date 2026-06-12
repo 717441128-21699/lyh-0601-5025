@@ -21,11 +21,13 @@ import { ApprovalFlow } from '@/components/features/ApprovalFlow';
 import dayjs from 'dayjs';
 
 const WarningCenter = () => {
-  const { warnings, statusFilter, typeFilter, searchKeyword, setStatusFilter, setTypeFilter, setSearchKeyword, getWarningsByProvince } = useWarningStore();
+  const { warnings, statusFilter, typeFilter, searchKeyword, setStatusFilter, setTypeFilter, setSearchKeyword, getWarningsByProvince, getWarningById } = useWarningStore();
   const { user, isNationalRole } = useAuthStore();
   const isNational = isNationalRole();
-  const [selectedWarning, setSelectedWarning] = useState<Warning | null>(null);
+  const [selectedWarningId, setSelectedWarningId] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+
+  const selectedWarning = selectedWarningId ? getWarningById(selectedWarningId) : null;
 
   const filteredWarnings = useMemo(() => {
     let result = getWarningsByProvince(user?.provinceIds);
@@ -97,7 +99,7 @@ const WarningCenter = () => {
   };
 
   const handleViewDetail = (warning: Warning) => {
-    setSelectedWarning(warning);
+    setSelectedWarningId(warning.id);
     setShowDetail(true);
   };
 
