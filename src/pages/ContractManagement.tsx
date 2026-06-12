@@ -15,22 +15,23 @@ import {
   Download,
   File,
   User,
+  ArrowRight,
+  Info,
 } from 'lucide-react';
 import { Contract, ContractStatus, BreachOrderStatus } from '@/types';
 import { formatCurrency, formatNumber } from '@/utils/formatters';
-import { useContractStore } from '@/store/useContractStore';
+import { useContractStore, ContractImportPreview, ReportImportPreview } from '@/store/useContractStore';
 import { useAuthStore } from '@/store/useAuthStore';
-import { provinces } from '@/data/provinces';
 
 const ContractManagement = () => {
   const { user } = useAuthStore();
   const {
     contracts,
     breachOrders,
-    importContract,
-    importReport,
-    getContractsByProvince,
-    getBreachOrdersByProvince,
+    parseContractFile,
+    confirmImportContracts,
+    parseReportFile,
+    confirmImportReport,
   } = useContractStore();
 
   const [activeTab, setActiveTab] = useState<'contracts' | 'breach'>('contracts');
@@ -42,8 +43,11 @@ const ContractManagement = () => {
   const [selectedContractId, setSelectedContractId] = useState<string>('');
   const [parsing, setParsing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [parseResult, setParseResult] = useState<any>(null);
+  const [parseSuccess, setParseSuccess] = useState(false);
+  const [parseFailed, setParseFailed] = useState(false);
   const [importMessage, setImportMessage] = useState<string>('');
+  const [contractPreview, setContractPreview] = useState<ContractImportPreview | null>(null);
+  const [reportPreview, setReportPreview] = useState<ReportImportPreview | null>(null);
 
   const userProvinceIds = useMemo(() => {
     if (user?.role === 'group_admin' || user?.role === 'technical_director' || user?.role === 'legal') {
@@ -123,24 +127,34 @@ const ContractManagement = () => {
   const handleFileUpload = async (file: File) => {
     setUploadedFile(file);
     setParsing(true);
-    setParseResult(null);
+    setParseSuccess(false);
+    setParseFailed(false);
     setImportMessage('');
+    setContractPreview(null);
+    setReportPreview(null);
 
     try {
       let result;
       if (uploadType === 'contract') {
-        result = await importContract(file);
+        result = await parseContractFile(file);
       } else {
-        result = await importReport(file, selectedContractId);
+        result = await parseReportFile(file, selectedContractId);
       }
 
-      setParseResult({
-        success: result.success,
-        message: result.message,
-      });
       setImportMessage(result.message);
+      if (result.success) {
+        setParseSuccess(true);
+        if (uploadType === 'contract' && result.preview) {
+          setContractPreview(result.preview as ContractImportPreview);
+        } else if (uploadType === 'report' && result.preview) {
+          setReportPreview(result.preview as ReportImportPreview);
+        }
+      } else {
+        setParseFailed(true);
+      }
     } catch (err) {
-      setParseResult({ success: false, message: '解析失败' });
+      setParseFailed(true);
+      setImportMessage('解析失败');
     }
 
     setParsing(false);
@@ -163,17 +177,33 @@ const ContractManagement = () => {
   };
 
   const handleConfirmImport = () => {
+    let result;
+    if (uploadType === 'contract' && contractPreview) {
+      result = confirmImportContracts(contractPreview);
+    } else if (uploadType === 'report' && reportPreview) {
+      result = confirmImportReport(reportPreview);
+    }
+    if (result) {
+      alert(result.message);
+    }
     setShowUploadModal(false);
     setUploadedFile(null);
-    setParseResult(null);
+    setParseSuccess(false);
+    setParseFailed(false);
     setImportMessage('');
+    setContractPreview(null);
+    setReportPreview(null);
+    setSelectedContractId('');
   };
 
   const closeModal = () => {
     setShowUploadModal(false);
     setUploadedFile(null);
-    setParseResult(null);
+    setParseSuccess(false);
+    setParseFailed(false);
     setImportMessage('');
+    setContractPreview(null);
+    setReportPreview(null);
     setSelectedContractId('');
   };
 
@@ -539,7 +569,9 @@ const ContractManagement = () => {
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ type: 'spring', damping: 25, stiffness: 250 }}
-              className="fixed inset-x-0 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] bg-dark-900 rounded-2xl border border-white/10 shadow-2xl z-50 overflow-hidden"
+              className={`fixed inset-x-0 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 ${
+                parseSuccess && contractPreview ? 'w-[680px] max-h-[85vh] overflow-y-auto' : 'w-[560px]'
+              } bg-dark-900 rounded-2xl border border-white/10 shadow-2xl z-50 overflow-hidden`}
             >
               <div className="flex items-center justify-between p-5 border-b border-white/5">
                 <h3 className="text-lg font-semibold text-white">
@@ -554,52 +586,59 @@ const ContractManagement = () => {
               </div>
 
               <div className="p-5 space-y-4">
-                {uploadType === 'report' && (
+                {uploadType === 'report' && !parseSuccess && (
                   <div>
-                    <label className="text-sm text-text-muted block mb-1.5">选择对应合同</label>
+                    <label className="text-sm text-text-muted block mb-1.5">
+                      选择对应合同 <span className="text-danger-400">*</span>
+                    </label>
                     <select
                       value={selectedContractId}
                       onChange={(e) => setSelectedContractId(e.target.value)}
                       className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-primary-500/50"
                     >
-                      <option value="">请选择合同（可选，系统也会自动识别）</option>
+                      <option value="">请选择合同</option>
                       {visibleContracts.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.contractNo} - {c.partyA} ({c.provinceName})
+                          {c.contractNo} - {c.partyA} ({c.provinceName}) | 约定{c.agreedQuantity}吨 / 实际{c.actualQuantity}吨
                         </option>
                       ))}
                     </select>
+                    <p className="text-xs text-text-muted mt-1">
+                      如果报告中包含合同号，系统也会自动识别匹配
+                    </p>
                   </div>
                 )}
 
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={handleDrop}
-                  className={`relative border-2 border-dashed rounded-xl p-10 text-center transition-all ${
-                    dragOver
-                      ? 'border-primary-500/50 bg-primary-500/5'
-                      : 'border-white/10 bg-white/[0.02] hover:border-white/20'
-                  }`}
-                >
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls"
-                    onChange={handleFileInput}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <div className="w-14 h-14 mx-auto mb-4 rounded-xl bg-primary-500/10 flex items-center justify-center">
-                    <Upload className="w-7 h-7 text-primary-400" />
+                {!parseSuccess && (
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={handleDrop}
+                    className={`relative border-2 border-dashed rounded-xl p-10 text-center transition-all ${
+                      dragOver
+                        ? 'border-primary-500/50 bg-primary-500/5'
+                        : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                    }`}
+                  >
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      onChange={handleFileInput}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <div className="w-14 h-14 mx-auto mb-4 rounded-xl bg-primary-500/10 flex items-center justify-center">
+                      <Upload className="w-7 h-7 text-primary-400" />
+                    </div>
+                    <p className="text-white font-medium mb-1">
+                      拖拽文件到此处，或点击选择
+                    </p>
+                    <p className="text-sm text-text-muted">
+                      支持 Excel 格式 (.xlsx, .xls)，系统将自动提取关键参数
+                    </p>
                   </div>
-                  <p className="text-white font-medium mb-1">
-                    拖拽文件到此处，或点击选择
-                  </p>
-                  <p className="text-sm text-text-muted">
-                    支持 Excel 格式 (.xlsx, .xls)，系统将自动提取关键参数
-                  </p>
-                </div>
+                )}
 
-                {uploadedFile && (
+                {uploadedFile && !parseSuccess && (
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -622,10 +661,10 @@ const ContractManagement = () => {
                           <div className="w-4 h-4 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
                           解析中...
                         </div>
-                      ) : parseResult ? (
-                        <div className="text-xs text-accent-400 flex items-center gap-1">
-                          <CheckCircle className="w-4 h-4" />
-                          完成
+                      ) : parseFailed ? (
+                        <div className="text-xs text-danger-400 flex items-center gap-1">
+                          <AlertCircle className="w-4 h-4" />
+                          失败
                         </div>
                       ) : null}
                     </div>
@@ -636,9 +675,7 @@ const ContractManagement = () => {
                         animate={{ opacity: 1, height: 'auto' }}
                         className="mt-3 pt-3 border-t border-white/5"
                       >
-                        <p className={`text-sm text-center ${
-                          parseResult?.success ? 'text-accent-400' : 'text-danger-400'
-                        }`}>
+                        <p className={`text-sm ${parseFailed ? 'text-danger-400' : 'text-text-muted'}`}>
                           {importMessage}
                         </p>
                       </motion.div>
@@ -646,13 +683,207 @@ const ContractManagement = () => {
                   </motion.div>
                 )}
 
-                <div className="p-3 rounded-lg bg-warning-500/10 border border-warning-500/20">
-                  <p className="text-xs text-warning-400">
-                    💡 提示: {uploadType === 'contract' 
-                      ? '合同 Excel 需包含合同号、甲乙双方、约定数量、单价等字段，导入后系统自动检测违约并生成工单' 
-                      : '检测报告 Excel 需包含批次号、电芯数量、容量、SOH等字段，导入后自动更新合同回收量'}
-                  </p>
-                </div>
+                {parseSuccess && contractPreview && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="space-y-4"
+                  >
+                    <div className="p-4 rounded-xl bg-accent-500/10 border border-accent-500/30 flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-accent-500/20 flex items-center justify-center shrink-0">
+                        <CheckCircle className="w-5 h-5 text-accent-400" />
+                      </div>
+                      <div>
+                        <p className="text-accent-400 font-medium">解析成功 - 以下是预览信息</p>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          点击"确认导入"后才会写入合同列表和违约工单
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 rounded-lg bg-white/5 border border-white/10">
+                        <p className="text-xs text-text-muted mb-1">合同总数</p>
+                        <p className="text-2xl font-bold text-white font-mono">{contractPreview.contracts.length}</p>
+                      </div>
+                      <div className="p-3 rounded-lg bg-white/5 border border-white/10">
+                        <p className="text-xs text-text-muted mb-1">存在违约风险</p>
+                        <p className={`text-2xl font-bold font-mono ${
+                          contractPreview.breachCount > 0 ? 'text-danger-400' : 'text-accent-400'
+                        }`}>
+                          {contractPreview.breachCount}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      <p className="text-xs text-text-muted">合同明细：</p>
+                      {contractPreview.contracts.map((c, idx) => (
+                        <div key={idx} className="p-3 rounded-lg bg-white/5 border border-white/10">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium text-white">{c.contractNo}</span>
+                            <span className={`px-2 py-0.5 text-xs rounded-md ${
+                              c.status === 'breached'
+                                ? 'bg-danger-500/20 text-danger-400'
+                                : 'bg-accent-500/20 text-accent-400'
+                            }`}>
+                              {c.status === 'breached' ? '违约' : '正常'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <span className="text-text-muted">甲方：</span>
+                              <span className="text-text-secondary">{c.partyA}</span>
+                            </div>
+                            <div>
+                              <span className="text-text-muted">乙方：</span>
+                              <span className="text-text-secondary">{c.partyB}</span>
+                            </div>
+                            <div>
+                              <span className="text-text-muted">省份：</span>
+                              <span className="text-text-secondary">{c.provinceName}</span>
+                            </div>
+                            <div>
+                              <span className="text-text-muted">单价：</span>
+                              <span className="text-accent-400 font-mono">{formatCurrency(c.unitPrice)}/吨</span>
+                            </div>
+                          </div>
+                          <div className="mt-2 pt-2 border-t border-white/5">
+                            <div className="flex items-center justify-between text-xs mb-1">
+                              <span className="text-text-muted">履约进度</span>
+                              <span className="text-white font-mono">
+                                {c.actualQuantity} / {c.agreedQuantity} 吨
+                              </span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-primary-600 to-primary-400"
+                                style={{
+                                  width: `${Math.min(100, (c.actualQuantity / c.agreedQuantity) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {contractPreview.breachCount > 0 && (
+                      <div className="p-3 rounded-lg bg-danger-500/10 border border-danger-500/30 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-danger-400 mt-0.5 shrink-0" />
+                        <p className="text-xs text-danger-400">
+                          {contractPreview.breachCount} 份合同实际回收量未达标（低于约定量的90%），
+                          确认导入后将自动生成违约工单并分派给"赵法务"处理。
+                        </p>
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+
+                {parseSuccess && reportPreview && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="space-y-4"
+                  >
+                    <div className="p-4 rounded-xl bg-accent-500/10 border border-accent-500/30 flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-accent-500/20 flex items-center justify-center shrink-0">
+                        <CheckCircle className="w-5 h-5 text-accent-400" />
+                      </div>
+                      <div>
+                        <p className="text-accent-400 font-medium">解析成功 - 以下是预览信息</p>
+                        <p className="text-xs text-text-muted mt-0.5">
+                          点击"确认导入"后才会更新合同数据和违约工单状态
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                      <p className="text-xs text-text-muted mb-3">匹配到的合同：</p>
+                      <p className="text-base font-medium text-white mb-2">{reportPreview.contractNo}</p>
+
+                      <div className="flex items-center justify-center gap-4 my-4">
+                        <div className="text-center">
+                          <p className="text-xs text-text-muted mb-1">原实际量</p>
+                          <p className="text-lg font-bold text-text-secondary font-mono">
+                            {reportPreview.oldActualQuantity}吨
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-center">
+                          <ArrowRight className="w-5 h-5 text-primary-400" />
+                          <span className="text-xs text-primary-400 mt-1">覆盖</span>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs text-text-muted mb-1">新实际量</p>
+                          <p className="text-lg font-bold text-accent-400 font-mono">
+                            {reportPreview.newActualQuantity}吨
+                          </p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs text-text-muted mb-1">约定量</p>
+                          <p className="text-lg font-bold text-text-secondary font-mono">
+                            {reportPreview.agreedQuantity}吨
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-700 bg-gradient-to-r from-primary-600 to-primary-400"
+                          style={{
+                            width: `${Math.min(100, (reportPreview.newActualQuantity / reportPreview.agreedQuantity) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <p className="text-xs text-text-muted mt-1.5 text-right font-mono">
+                        完成率：{((reportPreview.newActualQuantity / reportPreview.agreedQuantity) * 100).toFixed(1)}%
+                      </p>
+                    </div>
+
+                    <div className={`p-3 rounded-lg border flex items-start gap-2 ${
+                      reportPreview.breachChange === 'generated'
+                        ? 'bg-danger-500/10 border-danger-500/30'
+                        : reportPreview.breachChange === 'resolved'
+                        ? 'bg-accent-500/10 border-accent-500/30'
+                        : 'bg-white/5 border-white/10'
+                    }`}>
+                      <Info className={`w-4 h-4 mt-0.5 shrink-0 ${
+                        reportPreview.breachChange === 'generated'
+                          ? 'text-danger-400'
+                          : reportPreview.breachChange === 'resolved'
+                          ? 'text-accent-400'
+                          : 'text-text-muted'
+                      }`} />
+                      <p className={`text-xs ${
+                        reportPreview.breachChange === 'generated'
+                          ? 'text-danger-400'
+                          : reportPreview.breachChange === 'resolved'
+                          ? 'text-accent-400'
+                          : 'text-text-muted'
+                      }`}>
+                        {reportPreview.breachChange === 'generated' && (
+                          <>⚠️ 覆盖后从达标变为未达标，确认导入后将自动生成违约工单并派发给"赵法务"</>
+                        )}
+                        {reportPreview.breachChange === 'resolved' && (
+                          <>✅ 覆盖后从未达标变为达标，确认导入后原违约工单将标记为"已解决"</>
+                        )}
+                        {reportPreview.breachChange === 'none' && (
+                          <>ℹ️ 违约状态无变化，仅更新实际回收量</>
+                        )}
+                      </p>
+                    </div>
+                  </motion.div>
+                )}
+
+                {!parseSuccess && (
+                  <div className="p-3 rounded-lg bg-warning-500/10 border border-warning-500/20">
+                    <p className="text-xs text-warning-400">
+                      💡 提示: {uploadType === 'contract' 
+                        ? '合同 Excel 需包含合同号、甲乙双方、约定回收量、实际回收量、省份、单价等字段' 
+                        : '检测报告 Excel 需包含合同号、回收量等字段，请务必选择对应合同'}
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-3 p-5 border-t border-white/5">
@@ -664,7 +895,7 @@ const ContractManagement = () => {
                 </button>
                 <button
                   onClick={handleConfirmImport}
-                  disabled={!parseResult?.success}
+                  disabled={!parseSuccess || (!contractPreview && !reportPreview)}
                   className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   确认导入
