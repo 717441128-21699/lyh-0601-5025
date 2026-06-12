@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { Warning, WarningStatus, WarningType, ApprovalRecord } from '@/types';
-import { warnings, getWarnings } from '@/data/warnings';
+import { warnings } from '@/data/warnings';
 import dayjs from 'dayjs';
 
 interface WarningState {
@@ -12,9 +12,10 @@ interface WarningState {
   setStatusFilter: (status: WarningStatus | 'all') => void;
   setTypeFilter: (type: WarningType | 'all') => void;
   setSearchKeyword: (keyword: string) => void;
-  approveWarning: (warningId: string, level: number, opinion: string, result: 'pass' | 'reject' | 'adjust') => void;
+  approveWarning: (warningId: string, level: number, opinion: string, result: 'pass' | 'reject' | 'adjust', approver: string, role: string) => void;
   getWarningById: (id: string) => Warning | undefined;
   filterWarnings: () => void;
+  getWarningsByProvince: (provinceIds?: string[] | null) => Warning[];
 }
 
 export const useWarningStore = create<WarningState>((set, get) => ({
@@ -57,21 +58,37 @@ export const useWarningStore = create<WarningState>((set, get) => ({
     
     set({ filteredWarnings: filtered });
   },
-  approveWarning: (warningId, level, opinion, result) => {
+  approveWarning: (warningId, level, opinion, result, approver, role) => {
     set((state) => {
       const updatedWarnings = state.warnings.map((w) => {
         if (w.id === warningId) {
-          const newApprovalLevel = result === 'reject' ? w.currentApprovalLevel : w.currentApprovalLevel + 1;
-          const newStatus = result === 'reject' 
-            ? 'rejected' 
-            : newApprovalLevel >= 3 
-              ? 'resolved' 
-              : 'approving';
+          const existingRecord = w.approvalRecords.find((r) => r.level === level);
+          
+          if (existingRecord?.approveTime) {
+            return w;
+          }
+
+          let newApprovalLevel = w.currentApprovalLevel;
+          let newStatus: WarningStatus = w.status;
+
+          if (result === 'reject') {
+            newStatus = 'rejected';
+            newApprovalLevel = level;
+          } else {
+            newApprovalLevel = level;
+            if (newApprovalLevel >= 3) {
+              newStatus = 'resolved';
+            } else {
+              newStatus = 'approving';
+            }
+          }
           
           const updatedRecords = w.approvalRecords.map((r) => {
             if (r.level === level) {
               return {
                 ...r,
+                approver,
+                role,
                 approveTime: dayjs().format('YYYY-MM-DD HH:mm'),
                 opinion,
                 result,
@@ -82,7 +99,7 @@ export const useWarningStore = create<WarningState>((set, get) => ({
           
           return {
             ...w,
-            status: newStatus as Warning['status'],
+            status: newStatus,
             currentApprovalLevel: newApprovalLevel,
             approvalRecords: updatedRecords,
           };
@@ -95,4 +112,11 @@ export const useWarningStore = create<WarningState>((set, get) => ({
     get().filterWarnings();
   },
   getWarningById: (id) => get().warnings.find((w) => w.id === id),
+  getWarningsByProvince: (provinceIds) => {
+    const { warnings } = get();
+    if (!provinceIds || provinceIds.length === 0) {
+      return warnings;
+    }
+    return warnings.filter((w) => provinceIds.includes(w.provinceId));
+  },
 }));

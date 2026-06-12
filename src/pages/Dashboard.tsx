@@ -14,12 +14,14 @@ import { HeatMap } from '@/components/charts/HeatMap';
 import { Rankings } from '@/components/charts/Rankings';
 import { TrendChart } from '@/components/charts/TrendChart';
 import { useDashboardStore } from '@/store/useDashboardStore';
-import { provinces } from '@/data/provinces';
+import { useAuthStore } from '@/store/useAuthStore';
 import { nationalSOHTrend } from '@/data/batteries';
 import { formatNumber } from '@/utils/formatters';
 
 const Dashboard = () => {
-  const { stats } = useDashboardStore();
+  const { stats, visibleProvinces, rankedByRecycled, rankedByCascadeRate } = useDashboardStore();
+  const { isNationalRole } = useAuthStore();
+  const isNational = isNationalRole();
 
   const sohTrendData = nationalSOHTrend.map((item) => ({
     date: item.date,
@@ -41,7 +43,7 @@ const Dashboard = () => {
       >
         <div>
           <h1 className="page-title">
-            全国动力电池回收监测
+            {isNational ? '全国' : '所辖区域'}动力电池回收监测
             <span className="ml-2 text-sm font-normal text-text-muted">
               实时数据看板
             </span>
@@ -133,12 +135,12 @@ const Dashboard = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          <HeatMap provinces={provinces} title="全国回收量热力分布" />
+          <HeatMap provinces={visibleProvinces} title={isNational ? '全国回收量热力分布' : '所辖区域回收量热力分布'} />
         </div>
         <div>
           <Rankings
-            provinces={provinces}
-            title="梯次利用率排名"
+            provinces={rankedByCascadeRate}
+            title={isNational ? '梯次利用率排名' : '所辖区域梯次利用率排名'}
             metric="cascadeUtilRate"
             unit="%"
             limit={8}
@@ -204,8 +206,8 @@ const Dashboard = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1">
           <Rankings
-            provinces={provinces}
-            title="回收量排行榜"
+            provinces={rankedByRecycled}
+            title={isNational ? '回收量排行榜' : '所辖区域回收量排行榜'}
             metric="totalRecycled"
             unit="吨"
             limit={6}

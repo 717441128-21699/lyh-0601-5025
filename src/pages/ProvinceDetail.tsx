@@ -9,6 +9,7 @@ import {
   Recycle,
   Leaf,
   BarChart3,
+  ShieldAlert,
 } from 'lucide-react';
 import { getProvinceById } from '@/data/provinces';
 import { getFactoriesByProvince } from '@/data/factories';
@@ -17,21 +18,44 @@ import { StatCard } from '@/components/cards/StatCard';
 import { SOHMultiTrendChart } from '@/components/charts/SOHMultiTrendChart';
 import { TrendChart } from '@/components/charts/TrendChart';
 import { formatNumber } from '@/utils/formatters';
+import { useAuthStore } from '@/store/useAuthStore';
+import { useDashboardStore } from '@/store/useDashboardStore';
 
 const ProvinceDetail = () => {
   const { provinceId } = useParams<{ provinceId: string }>();
   const navigate = useNavigate();
+
+  const { user } = useAuthStore();
+  const { visibleProvinces } = useDashboardStore();
 
   const province = getProvinceById(provinceId || '');
   const factories = getFactoriesByProvince(provinceId || '');
   const sohTrend = getProvinceSOHTrend(provinceId || '');
   const batches = getBatchesByProvince(provinceId || '');
 
+  const hasProvinceRestriction = user?.provinceIds && user.provinceIds.length > 0;
+  const hasAccess = !hasProvinceRestriction || user?.provinceIds?.includes(provinceId || '');
+
   if (!province) {
     return (
       <div className="text-center py-20">
         <p className="text-text-muted">未找到该省份数据</p>
         <button onClick={() => navigate('/dashboard')} className="btn-primary mt-4">
+          返回看板
+        </button>
+      </div>
+    );
+  }
+
+  if (!hasAccess) {
+    return (
+      <div className="text-center py-20">
+        <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-warning-500/20 flex items-center justify-center">
+          <ShieldAlert className="w-8 h-8 text-warning-400" />
+        </div>
+        <h2 className="text-xl font-medium text-white mb-2">无权限访问</h2>
+        <p className="text-text-muted mb-6">您没有权限查看该省份的数据</p>
+        <button onClick={() => navigate('/dashboard')} className="btn-primary">
           返回看板
         </button>
       </div>

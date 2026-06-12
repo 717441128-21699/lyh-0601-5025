@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileText,
@@ -9,19 +9,30 @@ import {
   AlertCircle,
   Clock,
   CheckCircle,
-  XCircle,
   ChevronDown,
   Plus,
   X,
   Download,
   File,
+  User,
 } from 'lucide-react';
-import { contracts, breachOrders, getContracts, getBreachOrders } from '@/data/contracts';
 import { Contract, ContractStatus, BreachOrderStatus } from '@/types';
 import { formatCurrency, formatNumber } from '@/utils/formatters';
-import * as XLSX from 'xlsx';
+import { useContractStore } from '@/store/useContractStore';
+import { useAuthStore } from '@/store/useAuthStore';
+import { provinces } from '@/data/provinces';
 
 const ContractManagement = () => {
+  const { user } = useAuthStore();
+  const {
+    contracts,
+    breachOrders,
+    importContract,
+    importReport,
+    getContractsByProvince,
+    getBreachOrdersByProvince,
+  } = useContractStore();
+
   const [activeTab, setActiveTab] = useState<'contracts' | 'breach'>('contracts');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<ContractStatus | 'all'>('all');
@@ -31,19 +42,44 @@ const ContractManagement = () => {
   const [parsing, setParsing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [parseResult, setParseResult] = useState<any>(null);
+  const [importMessage, setImportMessage] = useState<string>('');
 
-  const filteredContracts = contracts.filter((c) => {
-    if (statusFilter !== 'all' && c.status !== statusFilter) return false;
+  const userProvinceIds = useMemo(() => {
+    if (user?.role === 'group_admin' || user?.role === 'technical_director' || user?.role === 'legal') {
+      return null;
+    }
+    return user?.provinceIds || [];
+  }, [user]);
+
+  const visibleContracts = useMemo(() => {
+    let data: Contract[];
+    if (userProvinceIds === null) {
+      data = contracts;
+    } else {
+      data = contracts.filter((c) => userProvinceIds.includes(c.provinceId));
+    }
+
+    if (statusFilter !== 'all') {
+      data = data.filter((c) => c.status === statusFilter);
+    }
     if (searchKeyword) {
       const keyword = searchKeyword.toLowerCase();
-      return (
-        c.contractNo.toLowerCase().includes(keyword) ||
-        c.partyA.toLowerCase().includes(keyword) ||
-        c.partyB.toLowerCase().includes(keyword)
+      data = data.filter(
+        (c) =>
+          c.contractNo.toLowerCase().includes(keyword) ||
+          c.partyA.toLowerCase().includes(keyword) ||
+          c.partyB.toLowerCase().includes(keyword)
       );
     }
-    return true;
-  });
+    return data;
+  }, [contracts, userProvinceIds, statusFilter, searchKeyword]);
+
+  const visibleBreachOrders = useMemo(() => {
+    if (userProvinceIds === null) {
+      return breachOrders;
+    }
+    return breachOrders.filter((b) => userProvinceIds.includes(b.provinceId));
+  }, [breachOrders, userProvinceIds]);
 
   const getStatusLabel = (status: ContractStatus): string => {
     const labels = {
@@ -83,38 +119,30 @@ const ContractManagement = () => {
     return colors[status];
   };
 
-  const handleFileUpload = (file: File) => {
+  const handleFileUpload = async (file: File) => {
     setUploadedFile(file);
     setParsing(true);
     setParseResult(null);
+    setImportMessage('');
 
-    setTimeout(() => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
-          const sheetName = workbook.SheetNames[0];
-          const sheet = workbook.Sheets[sheetName];
-          const jsonData = XLSX.utils.sheet_to_json(sheet);
+    try {
+      let result;
+      if (uploadType === 'contract') {
+        result = await importContract(file);
+      } else {
+        result = await importReport(file, '');
+      }
 
-          setParseResult({
-            rows: jsonData.length,
-            columns: Object.keys(jsonData[0] || {}).length,
-            preview: jsonData.slice(0, 5),
-          });
-        } catch (err) {
-          setParseResult({
-            rows: Math.floor(Math.random() * 100) + 20,
-            columns: 8,
-            preview: [],
-            success: false,
-          });
-        }
-        setParsing(false);
-      };
-      reader.readAsArrayBuffer(file);
-    }, 1500);
+      setParseResult({
+        success: result.success,
+        message: result.message,
+      });
+      setImportMessage(result.message);
+    } catch (err) {
+      setParseResult({ success: false, message: '解析失败' });
+    }
+
+    setParsing(false);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -133,6 +161,20 @@ const ContractManagement = () => {
     }
   };
 
+  const handleConfirmImport = () => {
+    setShowUploadModal(false);
+    setUploadedFile(null);
+    setParseResult(null);
+    setImportMessage('');
+  };
+
+  const closeModal = () => {
+    setShowUploadModal(false);
+    setUploadedFile(null);
+    setParseResult(null);
+    setImportMessage('');
+  };
+
   const statuses: { value: ContractStatus | 'all'; label: string; icon: any }[] = [
     { value: 'all', label: '全部', icon: null },
     { value: 'active', label: '履约中', icon: CheckCircle },
@@ -140,6 +182,8 @@ const ContractManagement = () => {
     { value: 'fulfilled', label: '已完成', icon: CheckCircle },
     { value: 'expired', label: '已过期', icon: Clock },
   ];
+
+  const canUpload = user?.role === 'group_admin' || user?.role === 'legal' || user?.role === 'region_manager';
 
   return (
     <div className="space-y-6">
@@ -153,29 +197,38 @@ const ContractManagement = () => {
           <h1 className="page-title">合同管理</h1>
           <p className="text-sm text-text-muted mt-1">
             管理回收合同、检测报告及违约工单
+            {userProvinceIds && userProvinceIds.length > 0 && (
+              <span className="ml-2 text-xs bg-primary-500/20 text-primary-400 px-2 py-0.5 rounded-full">
+                仅显示所辖区域数据
+              </span>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => {
-              setUploadType('report');
-              setShowUploadModal(true);
-            }}
-            className="btn-secondary text-sm flex items-center gap-2"
-          >
-            <Upload className="w-4 h-4" />
-            上传检测报告
-          </button>
-          <button
-            onClick={() => {
-              setUploadType('contract');
-              setShowUploadModal(true);
-            }}
-            className="btn-primary text-sm flex items-center gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            上传合同
-          </button>
+          {canUpload && (
+            <>
+              <button
+                onClick={() => {
+                  setUploadType('report');
+                  setShowUploadModal(true);
+                }}
+                className="btn-secondary text-sm flex items-center gap-2"
+              >
+                <Upload className="w-4 h-4" />
+                上传检测报告
+              </button>
+              <button
+                onClick={() => {
+                  setUploadType('contract');
+                  setShowUploadModal(true);
+                }}
+                className="btn-primary text-sm flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                上传合同
+              </button>
+            </>
+          )}
         </div>
       </motion.div>
 
@@ -196,6 +249,7 @@ const ContractManagement = () => {
           <span className="flex items-center gap-2">
             <FileText className="w-4 h-4" />
             合同列表
+            <span className="text-xs text-text-muted">({visibleContracts.length})</span>
           </span>
         </button>
         <button
@@ -210,7 +264,7 @@ const ContractManagement = () => {
             <AlertCircle className="w-4 h-4" />
             违约工单
             <span className="px-1.5 py-0.5 text-xs bg-danger-500/20 text-danger-400 rounded-full">
-              {breachOrders.length}
+              {visibleBreachOrders.filter(o => o.status !== 'resolved').length}
             </span>
           </span>
         </button>
@@ -257,14 +311,15 @@ const ContractManagement = () => {
           </motion.div>
 
           <div className="grid grid-cols-1 gap-4">
-            <AnimatePresence>
-              {filteredContracts.map((contract, index) => (
+            <AnimatePresence mode="popLayout">
+              {visibleContracts.map((contract, index) => (
                 <motion.div
                   key={contract.id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -20 }}
-                  transition={{ duration: 0.3, delay: 0.2 + index * 0.05 }}
+                  transition={{ duration: 0.3, delay: 0.2 + index * 0.03 }}
+                  layout
                   className="glass-card-hover p-5"
                 >
                   <div className="flex items-start gap-4">
@@ -316,7 +371,7 @@ const ContractManagement = () => {
                           </div>
                           <div className="h-2 rounded-full bg-white/5 overflow-hidden">
                             <div
-                              className={`h-full rounded-full transition-all duration-500 ${
+                              className={`h-full rounded-full transition-all duration-700 ${
                                 contract.actualQuantity / contract.agreedQuantity >= 0.9
                                   ? 'bg-gradient-to-r from-accent-600 to-accent-400'
                                   : contract.actualQuantity / contract.agreedQuantity >= 0.6
@@ -358,9 +413,6 @@ const ContractManagement = () => {
                             <Download className="w-3.5 h-3.5" />
                             下载合同
                           </button>
-                          <button className="px-3 py-1.5 text-xs text-text-secondary hover:text-white hover:bg-white/5 rounded-md transition-colors">
-                            查看详情
-                          </button>
                         </div>
                       </div>
                     </div>
@@ -368,64 +420,105 @@ const ContractManagement = () => {
                 </motion.div>
               ))}
             </AnimatePresence>
+
+            {visibleContracts.length === 0 && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="text-center py-16 glass-card"
+              >
+                <FileText className="w-12 h-12 mx-auto text-text-muted mb-3" />
+                <p className="text-text-muted">暂无合同数据</p>
+              </motion.div>
+            )}
           </div>
         </>
       )}
 
       {activeTab === 'breach' && (
         <div className="space-y-3">
-          {breachOrders.map((order, index) => (
+          {visibleBreachOrders.length === 0 ? (
             <motion.div
-              key={order.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: 0.2 + index * 0.05 }}
-              className="glass-card-hover p-5"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="text-center py-16 glass-card"
             >
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-xl bg-danger-500/10 border border-danger-500/20 flex items-center justify-center">
-                  <AlertCircle className="w-6 h-6 text-danger-400" />
-                </div>
-
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h3 className="text-base font-medium text-white">
-                      {order.contractNo} 违约工单
-                    </h3>
-                    <span className={`px-2 py-0.5 text-xs rounded-md ${getBreachStatusColor(order.status)}`}>
-                      {getBreachStatusLabel(order.status)}
-                    </span>
-                  </div>
-
-                  <p className="text-sm text-text-secondary mb-3">{order.reason}</p>
-
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <p className="text-xs text-text-muted mb-1">缺口量</p>
-                      <p className="text-lg font-mono text-danger-400 font-bold">
-                        {order.shortfall} 吨
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-text-muted mb-1">预估损失</p>
-                      <p className="text-lg font-mono text-warning-400 font-bold">
-                        {formatCurrency(order.estimatedLoss)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-text-muted mb-1">处理人</p>
-                      <p className="text-sm text-white">{order.handler || '待分配'}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="text-right">
-                  <p className="text-xs text-text-muted mb-2">{order.createTime}</p>
-                  <button className="btn-primary text-xs">处理工单</button>
-                </div>
-              </div>
+              <CheckCircle className="w-12 h-12 mx-auto text-accent-400 mb-3" />
+              <p className="text-text-muted">暂无违约工单</p>
             </motion.div>
-          ))}
+          ) : (
+            <AnimatePresence mode="popLayout">
+              {visibleBreachOrders.map((order, index) => (
+                <motion.div
+                  key={order.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.3, delay: 0.2 + index * 0.05 }}
+                  layout
+                  className="glass-card-hover p-5"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="w-12 h-12 rounded-xl bg-danger-500/10 border border-danger-500/20 flex items-center justify-center">
+                      <AlertCircle className="w-6 h-6 text-danger-400" />
+                    </div>
+
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="text-base font-medium text-white">
+                          {order.contractNo} 违约工单
+                        </h3>
+                        <span className={`px-2 py-0.5 text-xs rounded-md ${getBreachStatusColor(order.status)}`}>
+                          {getBreachStatusLabel(order.status)}
+                        </span>
+                      </div>
+
+                      <p className="text-sm text-text-secondary mb-3">{order.reason}</p>
+
+                      <div className="grid grid-cols-4 gap-4">
+                        <div>
+                          <p className="text-xs text-text-muted mb-1">缺口量</p>
+                          <p className="text-lg font-mono text-danger-400 font-bold">
+                            {order.shortfall} 吨
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-text-muted mb-1">预估损失</p>
+                          <p className="text-lg font-mono text-warning-400 font-bold">
+                            {formatCurrency(order.estimatedLoss)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-text-muted mb-1">处理人</p>
+                          <p className="text-sm text-white flex items-center gap-1.5">
+                            {order.handler ? (
+                              <>
+                                <User className="w-3.5 h-3.5 text-primary-400" />
+                                {order.handler}
+                                <span className="text-xs text-accent-400 ml-1">(已分派)</span>
+                              </>
+                            ) : (
+                              <span className="text-text-muted">待分配</span>
+                            )}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-text-muted mb-1">创建时间</p>
+                          <p className="text-sm text-white">{order.createTime}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      {order.status !== 'resolved' && (
+                        <button className="btn-primary text-xs">处理工单</button>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          )}
         </div>
       )}
 
@@ -436,7 +529,7 @@ const ContractManagement = () => {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setShowUploadModal(false)}
+              onClick={closeModal}
               className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center"
             />
             <motion.div
@@ -451,7 +544,7 @@ const ContractManagement = () => {
                   {uploadType === 'contract' ? '上传回收合同' : '上传检测报告'}
                 </h3>
                 <button
-                  onClick={() => setShowUploadModal(false)}
+                  onClick={closeModal}
                   className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
                 >
                   <X className="w-5 h-5 text-text-secondary" />
@@ -512,33 +605,21 @@ const ContractManagement = () => {
                       ) : parseResult ? (
                         <div className="text-xs text-accent-400 flex items-center gap-1">
                           <CheckCircle className="w-4 h-4" />
-                          解析完成
+                          完成
                         </div>
                       ) : null}
                     </div>
 
-                    {parseResult && (
+                    {importMessage && (
                       <motion.div
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: 'auto' }}
                         className="mt-3 pt-3 border-t border-white/5"
                       >
-                        <div className="grid grid-cols-2 gap-3 mb-3">
-                          <div className="text-center">
-                            <p className="text-lg font-bold font-mono text-white">
-                              {parseResult.rows}
-                            </p>
-                            <p className="text-xs text-text-muted">数据行数</p>
-                          </div>
-                          <div className="text-center">
-                            <p className="text-lg font-bold font-mono text-white">
-                              {parseResult.columns}
-                            </p>
-                            <p className="text-xs text-text-muted">字段列数</p>
-                          </div>
-                        </div>
-                        <p className="text-xs text-accent-400 text-center">
-                          ✓ 系统已自动提取关键参数
+                        <p className={`text-sm text-center ${
+                          parseResult?.success ? 'text-accent-400' : 'text-danger-400'
+                        }`}>
+                          {importMessage}
                         </p>
                       </motion.div>
                     )}
@@ -548,21 +629,22 @@ const ContractManagement = () => {
                 <div className="p-3 rounded-lg bg-warning-500/10 border border-warning-500/20">
                   <p className="text-xs text-warning-400">
                     💡 提示: {uploadType === 'contract' 
-                      ? '合同 Excel 需包含合同号、甲乙双方、约定数量、单价等字段' 
-                      : '检测报告 Excel 需包含批次号、电芯数量、容量、SOH等字段'}
+                      ? '合同 Excel 需包含合同号、甲乙双方、约定数量、单价等字段，导入后系统自动检测违约并生成工单' 
+                      : '检测报告 Excel 需包含批次号、电芯数量、容量、SOH等字段，导入后自动更新合同回收量'}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center justify-end gap-3 p-5 border-t border-white/5">
                 <button
-                  onClick={() => setShowUploadModal(false)}
+                  onClick={closeModal}
                   className="btn-secondary text-sm"
                 >
                   取消
                 </button>
                 <button
-                  disabled={!parseResult}
+                  onClick={handleConfirmImport}
+                  disabled={!parseResult?.success}
                   className="btn-primary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   确认导入

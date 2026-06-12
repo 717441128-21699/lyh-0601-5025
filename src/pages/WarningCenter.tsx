@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   AlertTriangle,
@@ -12,16 +12,42 @@ import {
   FileText,
   X,
   ChevronDown,
+  ShieldAlert,
 } from 'lucide-react';
 import { useWarningStore } from '@/store/useWarningStore';
+import { useAuthStore } from '@/store/useAuthStore';
 import { Warning, WarningStatus, WarningType } from '@/types';
 import { ApprovalFlow } from '@/components/features/ApprovalFlow';
 import dayjs from 'dayjs';
 
 const WarningCenter = () => {
-  const { filteredWarnings, statusFilter, typeFilter, searchKeyword, setStatusFilter, setTypeFilter, setSearchKeyword } = useWarningStore();
+  const { warnings, statusFilter, typeFilter, searchKeyword, setStatusFilter, setTypeFilter, setSearchKeyword, getWarningsByProvince } = useWarningStore();
+  const { user, isNationalRole } = useAuthStore();
+  const isNational = isNationalRole();
   const [selectedWarning, setSelectedWarning] = useState<Warning | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+
+  const filteredWarnings = useMemo(() => {
+    let result = getWarningsByProvince(user?.provinceIds);
+
+    if (statusFilter !== 'all') {
+      result = result.filter((w) => w.status === statusFilter);
+    }
+    if (typeFilter !== 'all') {
+      result = result.filter((w) => w.type === typeFilter);
+    }
+    if (searchKeyword) {
+      const keyword = searchKeyword.toLowerCase();
+      result = result.filter(
+        (w) =>
+          w.title.toLowerCase().includes(keyword) ||
+          w.factoryName.toLowerCase().includes(keyword) ||
+          w.provinceName.toLowerCase().includes(keyword)
+      );
+    }
+
+    return result;
+  }, [warnings, statusFilter, typeFilter, searchKeyword, user?.provinceIds, getWarningsByProvince]);
 
   const getWarningTypeLabel = (type: WarningType): string => {
     const labels = {
@@ -103,6 +129,12 @@ const WarningCenter = () => {
           <p className="text-sm text-text-muted mt-1">
             实时监测电池健康与设备状态，及时处理预警信息
           </p>
+          {!isNational && (
+            <div className="flex items-center gap-1.5 mt-2 text-xs text-warning-400">
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>仅显示所辖区域数据</span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <div className="relative">

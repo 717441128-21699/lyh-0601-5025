@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
-import { Check, X, Clock, User, FileText, ChevronRight } from 'lucide-react';
-import { Warning, ApprovalRecord } from '@/types';
+import { Check, X, Clock, User, FileText, ChevronRight, Lock } from 'lucide-react';
+import { Warning, ApprovalRecord, UserRole } from '@/types';
 import { useState } from 'react';
 import { useWarningStore } from '@/store/useWarningStore';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -11,28 +11,41 @@ interface ApprovalFlowProps {
 }
 
 const approvalSteps = [
-  { level: 1, title: '品控确认', role: '品控人员', description: '核实预警数据真实性' },
-  { level: 2, title: '技术总监复核', role: '技术总监', description: '评估技术方案可行性' },
-  { level: 3, title: '集团总裁批准', role: '集团总裁', description: '最终决策审批' },
+  { level: 1, title: '品控确认', role: '品控人员', description: '核实预警数据真实性', roleKey: 'quality_control' as UserRole },
+  { level: 2, title: '技术总监复核', role: '技术总监', description: '评估技术方案可行性', roleKey: 'technical_director' as UserRole },
+  { level: 3, title: '集团总裁批准', role: '集团总裁', description: '最终决策审批', roleKey: 'group_admin' as UserRole },
 ];
 
 export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) => {
   const [opinion, setOpinion] = useState('');
   const [selectedResult, setSelectedResult] = useState<'pass' | 'reject' | 'adjust' | null>(null);
-  const { approveWarning } = useWarningStore();
+  const { approveWarning, getWarningById } = useWarningStore();
   const { user } = useAuthStore();
 
-  const currentLevel = warning.currentApprovalLevel;
-  const isCompleted = currentLevel >= 3 || warning.status === 'resolved' || warning.status === 'rejected';
+  const currentWarning = getWarningById(warning.id) || warning;
+  const currentLevel = currentWarning.currentApprovalLevel;
+  const nextLevel = currentLevel + 1;
+  const isCompleted = currentLevel >= 3 || currentWarning.status === 'resolved' || currentWarning.status === 'rejected';
 
   const canApprove = (level: number): boolean => {
     if (isCompleted) return false;
-    if (warning.status === 'rejected') return false;
-    return level === currentLevel + 1;
+    if (currentWarning.status === 'rejected') return false;
+    return level === nextLevel;
+  };
+
+  const hasApprovalPermission = (): boolean => {
+    if (!user) return false;
+    if (isCompleted) return false;
+    if (nextLevel > 3) return false;
+    
+    const step = approvalSteps.find((s) => s.level === nextLevel);
+    if (!step) return false;
+    
+    return user.role === step.roleKey;
   };
 
   const getApprovalRecord = (level: number): ApprovalRecord | undefined => {
-    return warning.approvalRecords.find((r) => r.level === level);
+    return currentWarning.approvalRecords.find((r) => r.level === level);
   };
 
   const getStatusIcon = (level: number) => {
@@ -64,12 +77,15 @@ export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) 
   };
 
   const handleSubmit = () => {
-    if (!selectedResult || !opinion.trim()) return;
-    const level = currentLevel + 1;
-    approveWarning(warning.id, level, opinion, selectedResult);
+    if (!selectedResult || !opinion.trim() || !user || !hasApprovalPermission()) return;
+    const level = nextLevel;
+    const roleName = approvalSteps.find((s) => s.level === level)?.role || '';
+    approveWarning(currentWarning.id, level, opinion, selectedResult, user.name, roleName);
     setSelectedResult(null);
     setOpinion('');
   };
+
+  const canShowSubmitPanel = hasApprovalPermission() && !isCompleted && nextLevel <= 3;
 
   return (
     <div className="space-y-6">
@@ -141,7 +157,11 @@ export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) 
                   <p className="text-xs text-text-muted mt-0.5">{step.description}</p>
 
                   {record?.result && (
-                    <div className="mt-3 p-3 rounded-lg bg-dark-900/50 border border-white/5">
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      className="mt-3 p-3 rounded-lg bg-dark-900/50 border border-white/5"
+                    >
                       <div className="flex items-center gap-2 mb-2">
                         {record.result === 'pass' && (
                           <span className="badge bg-accent-500/20 text-accent-400">通过</span>
@@ -155,7 +175,7 @@ export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) 
                         <span className="text-xs text-text-muted">— {record.approver}</span>
                       </div>
                       <p className="text-sm text-text-secondary">{record.opinion}</p>
-                    </div>
+                    </motion.div>
                   )}
                 </div>
               </div>
@@ -164,7 +184,7 @@ export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) 
         })}
       </div>
 
-      {!isCompleted && currentLevel < 3 && (
+      {canShowSubmitPanel && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -174,8 +194,8 @@ export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) 
           <div className="flex items-center gap-2 mb-3">
             <FileText className="w-5 h-5 text-warning-400" />
             <h4 className="font-medium text-white">
-              {currentLevel === 0 ? '一级审批 - 品控确认' :
-               currentLevel === 1 ? '二级审批 - 技术总监复核' :
+              {nextLevel === 1 ? '一级审批 - 品控确认' :
+               nextLevel === 2 ? '二级审批 - 技术总监复核' :
                '三级审批 - 集团总裁批准'}
             </h4>
           </div>
@@ -239,19 +259,47 @@ export const ApprovalFlow: React.FC<ApprovalFlowProps> = ({ warning, onClose }) 
         </motion.div>
       )}
 
+      {!canShowSubmitPanel && !isCompleted && nextLevel <= 3 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.6 }}
+          className="p-5 rounded-xl bg-dark-700/50 border border-dark-600 text-center"
+        >
+          <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-dark-600/50 flex items-center justify-center">
+            <Lock className="w-6 h-6 text-text-muted" />
+          </div>
+          <p className="text-white font-medium mb-1">无权限审批</p>
+          <p className="text-sm text-text-muted">
+            当前环节需要 {approvalSteps.find((s) => s.level === nextLevel)?.role} 处理，
+            您的角色为 {user?.roleName || '未知'}
+          </p>
+        </motion.div>
+      )}
+
       {isCompleted && (
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.5 }}
-          className="p-5 rounded-xl bg-accent-500/10 border border-accent-500/30 text-center"
+          className={`p-5 rounded-xl text-center ${
+            currentWarning.status === 'resolved'
+              ? 'bg-accent-500/10 border border-accent-500/30'
+              : 'bg-danger-500/10 border border-danger-500/30'
+          }`}
         >
-          <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-accent-500/20 flex items-center justify-center">
-            <Check className="w-6 h-6 text-accent-400" />
+          <div className={`w-12 h-12 mx-auto mb-3 rounded-full flex items-center justify-center ${
+            currentWarning.status === 'resolved' ? 'bg-accent-500/20' : 'bg-danger-500/20'
+          }`}>
+            {currentWarning.status === 'resolved' ? (
+              <Check className="w-6 h-6 text-accent-400" />
+            ) : (
+              <X className="w-6 h-6 text-danger-400" />
+            )}
           </div>
           <p className="text-white font-medium">审批流程已完成</p>
           <p className="text-sm text-text-muted mt-1">
-            {warning.status === 'resolved' ? '预警已解决' : '预警已驳回'}
+            {currentWarning.status === 'resolved' ? '预警已解决' : '预警已驳回'}
           </p>
         </motion.div>
       )}

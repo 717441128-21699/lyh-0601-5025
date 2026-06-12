@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileBarChart,
@@ -15,14 +15,34 @@ import {
   Recycle,
   Battery,
   Zap,
+  Info,
 } from 'lucide-react';
 import { healthReports } from '@/data/reports';
 import { HealthReport } from '@/types';
 import { formatNumber } from '@/utils/formatters';
+import { useAuthStore } from '@/store/useAuthStore';
 
 const HealthReportPage = () => {
   const [selectedReport, setSelectedReport] = useState<HealthReport | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
+
+  const { user, isNationalRole } = useAuthStore();
+
+  const filteredReports = useMemo(() => {
+    if (isNationalRole()) {
+      return healthReports;
+    }
+    const provinceIds = user?.provinceIds || [];
+    return healthReports.filter((report) => {
+      if (report.scopeType === 'national') {
+        return true;
+      }
+      if (report.scopeType === 'province') {
+        return provinceIds.includes(report.scopeId);
+      }
+      return false;
+    });
+  }, [user, isNationalRole]);
 
   const handleViewReport = (report: HealthReport) => {
     setSelectedReport(report);
@@ -55,6 +75,12 @@ const HealthReportPage = () => {
           <p className="text-sm text-text-muted mt-1">
             自动生成回收健康诊断报告，提供优化建议
           </p>
+          {!isNationalRole() && (
+            <div className="flex items-center gap-1.5 mt-2 text-xs text-info-400">
+              <Info className="w-3.5 h-3.5" />
+              <span>仅显示所辖区域数据</span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <button className="btn-secondary text-sm flex items-center gap-2">
@@ -69,7 +95,7 @@ const HealthReportPage = () => {
       </motion.div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {healthReports.map((report, index) => (
+        {filteredReports.map((report, index) => (
           <motion.div
             key={report.id}
             initial={{ opacity: 0, y: 20 }}
